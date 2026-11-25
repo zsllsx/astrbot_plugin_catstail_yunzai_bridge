@@ -62,8 +62,33 @@
   },
   "sse_read_timeout": {
     "type": "int",
-    "description": "MCP 读取超时（秒）",
-    "default": 300
+    "description": "MCP 读取超时（秒）；越短越容易在空闲后被服务端断流，建议 ≥ 900",
+    "default": 1800
+  },
+  "auto_heal": {
+    "type": "bool",
+    "description": "连接自愈：调用前探针 + 后台巡检，发现会话失效自动重连",
+    "default": true
+  },
+  "health_interval": {
+    "type": "int",
+    "description": "后台巡检间隔（秒）；需小于 Yunzai 侧 30 分钟会话 TTL 才能起到保活作用",
+    "default": 60
+  },
+  "probe_interval": {
+    "type": "int",
+    "description": "调用前探针缓存时间（秒），同一时间窗内只探一次",
+    "default": 15
+  },
+  "probe_timeout": {
+    "type": "int",
+    "description": "单次探针超时（秒）",
+    "default": 8
+  },
+  "heal_cooldown": {
+    "type": "int",
+    "description": "自愈冷却（秒），避免连续失败时反复重连",
+    "default": 10
   },
   "retry_max": {
     "type": "int",

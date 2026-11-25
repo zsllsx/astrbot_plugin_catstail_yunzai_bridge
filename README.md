@@ -72,9 +72,23 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 
 | 指令 | 权限 | 作用 |
 | --- | --- | --- |
-| `/yz_mcp status` | 管理员 | 查看地址、Token 掩码、连接状态、工具数、语料工具数、最近错误 |
+| `/yz_mcp status` | 管理员 | 查看地址、Token 掩码、连接状态、工具数、语料工具数、自愈参数、最近错误 |
 | `/yz_mcp reload` | 管理员 | 重新写入配置并重连 MCP |
+| `/yz_mcp reconnect` | 管理员 | 立即自愈连接（不重写配置） |
 | `/yz_mcp tools` | 管理员 | 列出已注册的 `yz_*` 工具 |
+
+## 连接自愈
+
+AstrBot 只会在 `anyio.ClosedResourceError` 时自动重连 MCP，而 Yunzai 侧会话 30 分钟无请求会被回收，之后抛的是 `McpError("Session terminated")` / `404 Session not found` —— 不会触发重连，表现为**失败一次之后就一直失败，直到重启 AstrBot**。
+
+本插件补了兜底（`auto_heal` 默认开启）：
+
+- **调用前探针**：调用 `yz_*` 前用 `session.list_tools()` 探一次会话（默认 15s 内只探一次），失效就先重连再执行。
+- **后台巡检**：默认 60s 一次，先 `GET /mcp/health` 判断 Yunzai 是否可达，不可达直接跳过；可达则探会话并自愈。巡检会刷新服务端 `lastSeen`，等于顺带保活。
+- **两层重连**：优先 `client._reconnect()` 原地换 session（工具对象不变，用户无感）；失败再退回 `disable + enable` 重注册工具。
+- **冷却**：`heal_cooldown` 默认 10s，断网期间不会反复重连把 AstrBot 拖住。
+
+可调项：`auto_heal` / `health_interval` / `probe_interval` / `probe_timeout` / `heal_cooldown`，建议 `sse_read_timeout` 保持 ≥ 900 秒。
 
 ## 工作流程
 
@@ -105,6 +119,9 @@ AstrBot 启动
 | 查不到数据 | 用户是否绑定 UID、是否更新过面板；`stale=true` 时先 `#更新面板` |
 | 剧情/台词答“没有查到” | 语料是否导入、问题是否超出语料范围；用 `yz_lore_sources` 确认版本与覆盖类型 |
 | Docker 连不上宿主机 | 用宿主机内网 IP，或配置 `host.docker.internal` / 同一 compose 网络 |
+| 工具一直报 `Session terminated` / `MCP session is not available` | 会话已失效但 AstrBot 不会自愈老逻辑；本插件会自动重建，也可 `/yz_mcp reconnect` 立即修复 |
+| 自愈一直失败 | 看 `/yz_mcp status` 的「最近错误」：`/mcp/health` 不通说明 Yunzai 没起来；Token 失效会在自愈回退路径中报 401 |
+| 空闲半小时后第一次调用失败 | 服务端会话 30 分钟 TTL 已回收；确认 `health_interval` < 1800s 且 `auto_heal` 未被关闭 |
 
 ## 兼容性
 

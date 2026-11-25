@@ -22,7 +22,7 @@ SYSTEM_RULES = """【catstail 游戏数据规则】
 6. 未接入的游戏（如绝区零）直接说明暂不支持，不要假装查询；没有对应前缀的工具也不要用其他游戏的工具顶替。
 7. 工具返回的数值是唯一事实来源；配队/词条建议必须基于这些数值。
 8. 只有用户明确要求"戳一戳/贴表情/发表情包"时才调用群互动工具；一次调用只做一次，被冷却拒绝时如实告知还要等多久，不要连续重试。
-9. 贴表情只能使用系统注入的 message_id，禁止编造；没有该参数就请用户重新发一条消息。
+9. 群互动工具里的 qq、group_id、message_id 全部由插件在调用前自动注入真实值，你不需要也无法提供：不要填写、不要编造，更不要因为"没有 message_id"就拒绝调用或让用户重新发消息，直接调用工具即可；只有工具返回消息找不到/已过期这类错误时，才请用户重新发一条。
 10. 用户用别称、简写、错字或称号称呼角色（如“胡淘”“往生堂堂主”）时，先用对应游戏的 yz_*_alias_resolve 确认是哪个角色，再查面板或圣遗物；解析不到就如实说明，不要猜成其他角色。"""
 
 # 语料工具按数据注册：Yunzai 侧没导入语料就整组不注册，规则也要跟着条件追加，
@@ -52,6 +52,10 @@ class CatstailYunzaiBridge(Star):
         self.config = config or {}
         self._sync_task: asyncio.Task[None] | None = None
         self._sync_lock = asyncio.Lock()
+        self._heal_lock = asyncio.Lock()
+        self._watch_task: asyncio.Task[None] | None = None
+        self._last_heal: float = 0.0
+        self._last_probe: float = 0.0
         self._last_error: str | None = None
         self._last_success: float | None = None
         self._manifest: dict[str, Any] | None = None
@@ -113,7 +117,7 @@ class CatstailYunzaiBridge(Star):
             "url": self._mcp_url(),
             "headers": {"Authorization": f"Bearer {self._token()}"},
             "timeout": self._as_int("connect_timeout", 30, 3, 120),
-            "sse_read_timeout": self._as_int("sse_read_timeout", 300, 30, 1800),
+            "sse_read_timeout": self._as_int("sse_read_timeout", 1800, 30, 1800),
             "active": True,
         }
 
@@ -322,6 +326,165 @@ class CatstailYunzaiBridge(Star):
                 if attempt < attempts:
                     await asyncio.sleep(interval)
 
+    # ------------------------------------------------------------------ self-heal
+
+    def _health_url(self) -> str:
+        return self._mcp_url().rstrip("/") + "/health"
+
+    async def _health_ok(self) -> bool:
+        """Yunzai 侧是否可达（/mcp/health 免鉴权，开销极小）。"""
+        try:
+            timeout = aiohttp.ClientTimeout(
+                total=self._as_int("probe_timeout", 8, 2, 30)
+            )
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(self._health_url()) as response:
+                    return response.status == 200
+        except Exception:
+            return False
+
+    def _our_client(self) -> Any:
+        """取本服务对应的 MCPClient。
+
+        优先用官方兼容视图 mcp_client_dict；拿不到就从工具对象上的 mcp_client
+        反查，避免依赖某个版本的内部字典结构。
+        """
+        try:
+            mgr = self.context.get_llm_tool_manager()
+        except Exception:
+            return None
+        try:
+            clients = getattr(mgr, "mcp_client_dict", None)
+            client = clients.get(self.server_name) if clients else None
+            if client is not None:
+                return client
+        except Exception:
+            pass
+        for item in getattr(mgr, "func_list", None) or []:
+            name = str(getattr(item, "name", "") or "")
+            if not name.startswith(self.tool_prefix):
+                continue
+            wrapped = self._unwrap_tool(item)
+            owner = getattr(wrapped, "mcp_server_name", None)
+            if owner not in (None, self.server_name):
+                continue
+            client = getattr(wrapped, "mcp_client", None)
+            if client is not None:
+                return client
+        return None
+
+    async def _probe(self, client: Any) -> bool:
+        """用一次轻量 MCP 请求判断会话是否还活着。
+
+        断线时这里会收到 McpError("Session terminated") / 404 Session not found /
+        ClosedResourceError，全部按“不可用”处理。顺带刷新服务端会话的 lastSeen，
+        避免 Yunzai 侧 30 分钟会话 TTL 把空闲会话清掉。
+        """
+        session = getattr(client, "session", None)
+        if session is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                session.list_tools(),
+                timeout=self._as_int("probe_timeout", 8, 2, 30),
+            )
+            return True
+        except Exception as exc:
+            self.logger.debug(f"MCP 会话探针失败: {exc}")
+            return False
+
+    async def _reconnect_client(self, client: Any) -> bool:
+        """原地重连：保留已注册的工具对象，只换底层 session。"""
+        reconnect = getattr(client, "_reconnect", None)
+        if reconnect is None:
+            return False
+        try:
+            await reconnect()
+        except Exception as exc:
+            self.logger.warning(f"MCP 原地重连失败: {exc}")
+            return False
+        return await self._probe(client)
+
+    def _mark_ok(self) -> None:
+        self._last_error = None
+        self._last_success = time.time()
+
+    async def _heal(self, reason: str, force: bool = False) -> bool:
+        """修复 MCP 连接。
+
+        先尝试 client._reconnect()（便宜、不重注册工具），失败再退回
+        disable+enable 的官方路径。带冷却，避免连续失败时反复重连把 AstrBot 卡住。
+        """
+        if not bool(self._get("auto_heal", True)):
+            return False
+        async with self._heal_lock:
+            now = time.time()
+            cooldown = self._as_int("heal_cooldown", 10, 1, 300)
+            if not force and now - self._last_heal < cooldown:
+                return False
+            self._last_heal = now
+            self.logger.info(f"MCP 连接自愈开始: {reason}")
+
+            client = self._our_client()
+            if client is not None and await self._reconnect_client(client):
+                self._mark_ok()
+                self.logger.info(f"MCP 连接自愈成功（原地重连）: {reason}")
+                return True
+
+            try:
+                await self._apply(force=True)
+            except Exception as exc:
+                self._last_error = str(exc)
+                self.logger.warning(f"MCP 自愈失败（重注册工具）: {exc}")
+                return False
+
+            client = self._our_client()
+            if client is not None and await self._probe(client):
+                self._mark_ok()
+                self.logger.info(f"MCP 连接自愈成功（重注册工具）: {reason}")
+                return True
+
+            self.logger.warning(f"MCP 自愈未生效: {reason}")
+            return False
+
+    async def _ensure_alive(self) -> None:
+        """调用工具前确认会话可用；探针有 TTL，正常路径几乎零开销。"""
+        now = time.time()
+        if now - self._last_probe < self._as_int("probe_interval", 15, 1, 300):
+            return
+        self._last_probe = now
+        client = self._our_client()
+        if client is None:
+            return
+        if await self._probe(client):
+            return
+        await self._heal("调用前探针失败")
+
+    async def _watch_once(self) -> None:
+        if not self.enabled or not bool(self._get("auto_heal", True)):
+            return
+        if self._sync_task and not self._sync_task.done():
+            return
+        if not await self._health_ok():
+            return
+        client = self._our_client()
+        if client is None:
+            await self._heal("服务未出现在运行时列表")
+            return
+        if not await self._probe(client):
+            await self._heal("后台巡检探针失败")
+
+    async def _watch_loop(self) -> None:
+        interval = self._as_int("health_interval", 60, 15, 600)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._watch_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.debug(f"MCP 健康巡检异常: {exc}")
+
     # ------------------------------------------------------------------ hooks
 
     @filter.on_astrbot_loaded()
@@ -332,11 +495,47 @@ class CatstailYunzaiBridge(Star):
         await self._restore_manifest()
         if not bool(self._get("auto_register", True)) and not self._get("token", ""):
             return
+        if not (self._watch_task and not self._watch_task.done()):
+            self._watch_task = asyncio.create_task(
+                self._watch_loop(), name="catstail-yunzai-health"
+            )
         if self._sync_task and not self._sync_task.done():
             return
         self._sync_task = asyncio.create_task(
             self._background_sync(), name="catstail-yunzai-sync"
         )
+
+    @filter.on_using_llm_tool()
+    async def guard_connection(
+        self,
+        event: AstrMessageEvent,
+        tool: Any,
+        tool_args: dict | None,
+    ) -> None:
+        """调用前确认 MCP 会话可用。
+
+        AstrBot 只在 anyio.ClosedResourceError 时自动重连（mcp_client.py
+        call_tool_with_reconnect），而 Yunzai 会话超时/重启抛的是
+        McpError("Session terminated") 或 404 Session not found —— 不会触发重连，
+        于是一次失败之后就一直失败，直到重启 AstrBot。这里补上兜底。
+        """
+        if not bool(self._get("auto_heal", True)):
+            return
+        name = str(getattr(tool, "name", "") or "")
+        if not name.startswith(self.tool_prefix):
+            return
+        owned = self._mcp_tools()
+        if owned and name not in owned:
+            return
+        if self._sync_task and not self._sync_task.done():
+            return
+        try:
+            await asyncio.wait_for(
+                self._ensure_alive(),
+                timeout=self._as_int("probe_timeout", 8, 2, 30) + 10,
+            )
+        except Exception as exc:
+            self.logger.debug(f"连接自愈跳过: {exc}")
 
     @filter.on_llm_request()
     async def inject_rules(self, event: AstrMessageEvent, req: Any) -> None:
@@ -416,11 +615,22 @@ class CatstailYunzaiBridge(Star):
             # 拿不到参数定义时退回旧行为：只注入 qq
             return key == "qq" if params is None else key in params
 
-        def put(key: str, value: str) -> bool:
+        def put(key: str, value: str, force: bool = False, keep_digits: bool = False) -> bool:
+            """写入注入值，返回是否真的写了。
+
+            force=True 时真实上下文优先于模型填的值：qq/message_id 模型不可能知道，
+            模型给出的只可能是空串或编造值，必须覆盖，否则会串号或贴到不存在的消息上。
+            keep_digits=True 时保留模型给出的合法数字（例如用户明确要求操作别的群），
+            只在其缺失或不合法时用真实值覆盖。
+            """
             if not value or not value.isdigit() or not accepts(key):
                 return False
             if key in tool_args:
-                return False
+                if not force:
+                    return False
+                existing = str(tool_args.get(key) or "").strip()
+                if keep_digits and existing.isdigit():
+                    return False
             tool_args[key] = value
             return True
 
@@ -429,15 +639,18 @@ class CatstailYunzaiBridge(Star):
         message_id = self._message_id(event)
 
         injected: list[str] = []
-        if put("qq", sender):
+        if put("qq", sender, force=True):
             injected.append("qq")
         elif not sender.isdigit() and accepts("qq"):
             # 非 QQ 平台或取不到发送者时，清掉模型可能编造的 qq
             tool_args.pop("qq", None)
-        if put("group_id", group_id):
+        if put("group_id", group_id, force=True, keep_digits=True):
             injected.append("group_id")
-        if put("message_id", message_id):
+        if put("message_id", message_id, force=True):
             injected.append("message_id")
+        elif accepts("message_id"):
+            # 拿不到真实消息 ID 时清掉模型的编造值，让服务端返回明确的“缺少 message_id”
+            tool_args.pop("message_id", None)
 
         if injected:
             shown = [("qq=" + sender[:4] + "***") if key == "qq" else key for key in injected]
@@ -508,6 +721,14 @@ class CatstailYunzaiBridge(Star):
             yield event.plain_result(f"同步失败: {exc}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @yz_mcp.command("reconnect")
+    async def yz_mcp_reconnect(self, event: AstrMessageEvent):
+        """立即自愈 MCP 连接（不重写配置）"""
+        yield event.plain_result("开始自愈 MCP 连接…")
+        ok = await self._heal("手动触发", force=True)
+        yield event.plain_result(("自愈成功\n" if ok else "自愈未成功\n") + self._status_text())
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @yz_mcp.command("tools")
     async def yz_mcp_tools(self, event: AstrMessageEvent):
         """列出已连接的 yz_* 工具"""
@@ -553,9 +774,21 @@ class CatstailYunzaiBridge(Star):
                 f"清单: {len(self._manifest.get('tools') or [])} 个工具"
                 f", hash={str(self._manifest.get('toolsHash') or '')[:16]}…"
             )
+        lines.append(
+            "自愈: {state}（巡检 {interval}s，探针 {probe}s，冷却 {cooldown}s）".format(
+                state="开启" if bool(self._get("auto_heal", True)) else "关闭",
+                interval=self._as_int("health_interval", 60, 15, 600),
+                probe=self._as_int("probe_interval", 15, 1, 300),
+                cooldown=self._as_int("heal_cooldown", 10, 1, 300),
+            )
+        )
         if self._last_success:
             lines.append(
                 "上次同步: " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._last_success))
+            )
+        if self._last_heal:
+            lines.append(
+                "上次自愈: " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._last_heal))
             )
         if self._last_error:
             lines.append(f"最近错误: {self._last_error}")
@@ -575,3 +808,8 @@ class CatstailYunzaiBridge(Star):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self._sync_task = None
+        watch = self._watch_task
+        if watch and not watch.done():
+            watch.cancel()
+            await asyncio.gather(watch, return_exceptions=True)
+        self._watch_task = None
