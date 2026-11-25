@@ -1,0 +1,22 @@
+name: astrbot_plugin_catstail_yunzai_bridge
+display_name: Catstail 游戏数据桥接
+short_desc: 将 Yunzai 的 MCP 游戏数据工具接入 AstrBot，并注入当前用户身份
+desc: |
+  连接 Yunzai 侧的 catstail-yunzai-mcp（Streamable HTTP），把原神角色、武器、面板、
+  圣遗物、练度和活动数据提供给 AstrBot 的 AI 使用。
+
+  插件会在启动时自动写入/更新 MCP 配置，并在调用 yz_* 工具前注入当前 QQ，
+  避免模型询问 UID 或串号；同时提供固定提示词与 Skill，约束“先查数据再回答”。
+
+  需要 Yunzai 侧安装 catstail-yunzai-mcp 并配置 Token。
+version: 0.1.0
+author: catstail
+astrbot_version: ">=4.23.1"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+tags:
+  - mcp
+  - yunzai
+  - genshin
+  - game-data
