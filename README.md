@@ -7,7 +7,7 @@
 - 启动时自动写入/更新 AstrBot 的 MCP 配置（`data/mcp_server.json`）
 - 自动重连：Yunzai 后启动、重启或工具清单变化时可重试
 - 上下文注入：调用 `yz_*` 工具前把当前 QQ、群号、消息 ID 写进对应参数（只注入工具声明过的字段）
-- 固定提示词：要求先查工具、缺失数据如实说明、面板数据带时间
+- 固定提示词：要求先查工具、缺失数据如实说明、面板数据带时间；角色别称/简写/错字先走 `yz_*_alias_resolve`
 - 随插件提供 Skill：`game-data-advisor`
 - 管理指令：`/yz_mcp status|reload|tools`
 
@@ -97,7 +97,7 @@ AstrBot 启动
 | --- | --- |
 | `/yz_mcp status` 未连接 | 检查 `base_url` 是否可达、Yunzai 是否启动、Token 是否一致 |
 | 401 / Token 无效 | 重新复制 `config/config.yaml` 中的 Token，保存后 `/yz_mcp reload` |
-| 工具列表为空 | 查看 AstrBot 日志中的 `MCP 已连接`，确认 Yunzai 侧 8 个工具已注册 |
+| 工具列表为空 | 查看 AstrBot 日志中的 `MCP 已连接`，确认 Yunzai 侧 9 个工具已注册 |
 | 模型不调用工具 | 检查人格是否启用了 MCP 工具；确认 `inject_prompt` 未被关闭 |
 | 查不到数据 | 用户是否绑定 UID、是否更新过面板；`stale=true` 时先 `#更新面板` |
 | Docker 连不上宿主机 | 用宿主机内网 IP，或配置 `host.docker.internal` / 同一 compose 网络 |

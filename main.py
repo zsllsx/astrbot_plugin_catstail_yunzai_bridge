@@ -22,7 +22,8 @@ SYSTEM_RULES = """【catstail 游戏数据规则】
 6. 未接入的游戏（如绝区零）直接说明暂不支持，不要假装查询；没有对应前缀的工具也不要用其他游戏的工具顶替。
 7. 工具返回的数值是唯一事实来源；配队/词条建议必须基于这些数值。
 8. 只有用户明确要求"戳一戳/贴表情/发表情包"时才调用群互动工具；一次调用只做一次，被冷却拒绝时如实告知还要等多久，不要连续重试。
-9. 贴表情只能使用系统注入的 message_id，禁止编造；没有该参数就请用户重新发一条消息。"""
+9. 贴表情只能使用系统注入的 message_id，禁止编造；没有该参数就请用户重新发一条消息。
+10. 用户用别称、简写、错字或称号称呼角色（如“胡淘”“往生堂堂主”）时，先用对应游戏的 yz_*_alias_resolve 确认是哪个角色，再查面板或圣遗物；解析不到就如实说明，不要猜成其他角色。"""
 
 
 class FatalSyncError(Exception):
@@ -142,11 +143,36 @@ class CatstailYunzaiBridge(Star):
                     "toolsHash": manifest.get("toolsHash"),
                     "tools": manifest.get("tools") or [],
                     "games": manifest.get("games") or [],
-                    "time": manifest.get("time"),
+                    "time": time.time(),
                 },
             )
         except Exception as exc:
             self.logger.debug(f"写入 manifest 缓存失败: {exc}")
+
+    async def _restore_manifest(self) -> None:
+        """启动时回填上次的清单。
+
+        manifest 只在联网拉取成功时才有，若 Yunzai 尚未启动，提示词里的工具清单会为空。
+        读回缓存后，至少能按上次的工具名提示模型，状态页也能看到 hash。
+        """
+        if self._manifest:
+            return
+        try:
+            cached = await self.get_kv_data("manifest", None)
+        except Exception as exc:
+            self.logger.debug(f"读取 manifest 缓存失败: {exc}")
+            return
+        if not isinstance(cached, dict):
+            return
+        tools = cached.get("tools")
+        if not isinstance(tools, list) or not tools:
+            return
+        self._manifest = {
+            "tools": tools,
+            "toolsHash": cached.get("toolsHash"),
+            "games": cached.get("games") or [],
+        }
+        self.logger.debug(f"已载入 manifest 缓存: tools={len(tools)}")
 
     # ------------------------------------------------------------------ mcp sync
 
@@ -185,7 +211,7 @@ class CatstailYunzaiBridge(Star):
 
             existing = servers.get(name)
             same = existing == server_cfg
-            runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {})
+            runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {}) or {}
             connected = name in runtime_view
 
             if same and connected and not force:
@@ -213,7 +239,7 @@ class CatstailYunzaiBridge(Star):
             except Exception as exc:
                 raise RuntimeError(f"启用 MCP 服务失败: {exc}") from exc
 
-            runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {})
+            runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {}) or {}
             if name not in runtime_view:
                 raise RuntimeError("MCP 服务未出现在运行时列表，可能仍在初始化")
 
@@ -287,6 +313,7 @@ class CatstailYunzaiBridge(Star):
         if not self.enabled:
             self.logger.info("桥接已禁用")
             return
+        await self._restore_manifest()
         if not bool(self._get("auto_register", True)) and not self._get("token", ""):
             return
         if self._sync_task and not self._sync_task.done():
@@ -341,6 +368,10 @@ class CatstailYunzaiBridge(Star):
             return
         name = str(getattr(tool, "name", "") or "")
         if not name.startswith(self.tool_prefix):
+            return
+        # 只处理本服务注册的工具：其他插件也可能有 yz_* 工具，不应给它们塞身份参数
+        owned = self._mcp_tools()
+        if owned and name not in owned:
             return
 
         params = self._tool_params(tool)
@@ -466,7 +497,8 @@ class CatstailYunzaiBridge(Star):
 
         connected = False
         try:
-            connected = self.server_name in self.context.get_llm_tool_manager().mcp_server_runtime_view
+            runtime_view = self.context.get_llm_tool_manager().mcp_server_runtime_view or {}
+            connected = self.server_name in runtime_view
         except Exception:
             pass
         lines.append(f"连接: {'已连接' if connected else '未连接'}")

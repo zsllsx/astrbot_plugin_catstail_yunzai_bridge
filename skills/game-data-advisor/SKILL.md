@@ -13,6 +13,7 @@ description: 回答原神/星铁的角色、武器（光锥）、面板、圣遗
 | 意图 | 原神 | 星铁 |
 | --- | --- | --- |
 | 角色列表 | `yz_gs_character_list` | `yz_sr_character_list` |
+| 角色别称/简写解析 | `yz_gs_alias_resolve` | `yz_sr_alias_resolve` |
 | 角色属性/天赋 | `yz_gs_character_info` | `yz_sr_character_info` |
 | 武器属性 | `yz_gs_weapon_info` | `yz_sr_weapon_info`（光锥） |
 | 角色面板 | `yz_gs_player_profile` | `yz_sr_player_profile` |
@@ -24,7 +25,7 @@ description: 回答原神/星铁的角色、武器（光锥）、面板、圣遗
 4. 用户明确给出他人 UID 时，才在 `uid` 参数中填写该 UID。
 5. 只使用工具返回值中的数值；缺失字段明确说明“没有查到”，不要补全。
 6. 回答面板时带上数据时间；`meta.stale=true` 时提醒用户可先执行 `#更新面板`。
-7. 角色名不确定时，先查对应游戏的 `character_list` 或用别名确认，再查面板。
+7. 用户用别称、简写、错字或称号称呼角色（如“胡淘”“往生堂堂主”）时，先调用对应游戏的 `yz_*_alias_resolve` 确认角色，再查面板或圣遗物；解析不到就如实说明，不要猜成其他角色。
 
 ## 星铁差异
 
