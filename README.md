@@ -86,7 +86,7 @@ AstrBot 启动
 
 用户提问
   ├─ on_llm_request：追加固定规则
-  ├─ 模型调用 yz_player_profile（不填 qq）
+  ├─ 模型调用 yz_gs_player_profile（不填 qq）
   ├─ on_using_llm_tool：tool_args["qq"] = 当前 QQ
   └─ MCP 返回数据，模型基于数据回答
 ```

@@ -14,7 +14,7 @@ from astrbot.api.star import Context, Star
 PROMPT_MARKER = "【catstail 游戏数据规则】"
 
 SYSTEM_RULES = """【catstail 游戏数据规则】
-1. 涉及原神/星铁的角色、武器、面板、圣遗物、练度、活动时，必须先调用 yz_* 工具，不得凭记忆回答。
+1. 涉及原神角色、武器、面板、圣遗物、练度、活动时，必须先调用 yz_gs_* 工具，不得凭记忆回答。工具名里的 gs 表示原神，后续其他游戏会有各自前缀。
 2. 查询本人不要填写 qq 或 uid：qq 由桥接插件自动注入；用户明确给出他人 UID 时才填写 uid。
 3. 工具返回 ok=false 时，按 error.hint 告知用户；没有数据就说没有，禁止推测或补全数值。
 4. 回答面板时带上数据时间；stale=true 时提醒用户可先执行 #更新面板。

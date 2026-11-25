@@ -9,18 +9,18 @@ description: 回答原神角色、武器、面板、圣遗物、练度、活动�
 
 1. 判断游戏（当前仅原神）与意图：角色图鉴、角色面板、武器、圣遗物、练度、活动。
 2. 需要玩家数据时调用对应的 `yz_*` 工具：
-   - 角色列表：`yz_character_list`
-   - 角色属性/天赋：`yz_character_info`
-   - 武器属性：`yz_weapon_info`
-   - 面板：`yz_player_profile`
-   - 圣遗物：`yz_artifact_detail`
-   - 练度：`yz_progress_summary`
-   - 活动/公告：`yz_activity_news`
+   - 角色列表：`yz_gs_character_list`
+   - 角色属性/天赋：`yz_gs_character_info`
+   - 武器属性：`yz_gs_weapon_info`
+   - 面板：`yz_gs_player_profile`
+   - 圣遗物：`yz_gs_artifact_detail`
+   - 练度：`yz_gs_progress_summary`
+   - 活动/公告：`yz_gs_activity_news`
 3. 查询本人不要填写 `qq` 或 `uid`，桥接插件会自动注入当前 QQ。
 4. 用户明确给出他人 UID 时，才在 `uid` 参数中填写该 UID。
 5. 只使用工具返回值中的数值；缺失字段明确说明“没有查到”，不要补全。
 6. 回答面板时带上数据时间；`meta.stale=true` 时提醒用户可先执行 `#更新面板`。
-7. 角色名不确定时，先查 `yz_character_list` 或用别名确认，再查面板。
+7. 角色名不确定时，先查 `yz_gs_character_list` 或用别名确认，再查面板。
 
 ## 输出建议
 
