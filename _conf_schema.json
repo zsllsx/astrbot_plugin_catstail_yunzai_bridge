@@ -37,7 +37,7 @@
   },
   "inject_identity": {
     "type": "bool",
-    "description": "调用 yz_* 工具前注入当前 QQ",
+    "description": "调用 yz_* 工具前注入当前 QQ、群号与消息 ID（只注入工具声明过的参数）",
     "default": true
   },
   "inject_prompt": {

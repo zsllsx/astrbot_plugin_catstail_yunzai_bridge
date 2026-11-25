@@ -19,7 +19,9 @@ SYSTEM_RULES = """【catstail 游戏数据规则】
 3. 工具返回 ok=false 时，按 error.hint 告知用户；没有数据就说没有，禁止推测或补全数值。
 4. 回答面板时带上数据时间；stale=true 时提醒用户可先执行 #更新面板。
 5. 未接入的游戏（如星铁/绝区零）直接说明暂不支持，不要假装查询。
-6. 工具返回的数值是唯一事实来源；配队/词条建议必须基于这些数值。"""
+6. 工具返回的数值是唯一事实来源；配队/词条建议必须基于这些数值。
+7. 只有用户明确要求"戳一戳/贴表情/发表情包"时才调用群互动工具；一次调用只做一次，被冷却拒绝时如实告知还要等多久，不要连续重试。
+8. 贴表情只能使用系统注入的 message_id，禁止编造；没有该参数就请用户重新发一条消息。"""
 
 
 class FatalSyncError(Exception):
@@ -327,6 +329,11 @@ class CatstailYunzaiBridge(Star):
         tool: Any,
         tool_args: dict | None,
     ) -> None:
+        """把模型无法得知的真实上下文注入工具参数。
+
+        qq 用于确认查询对象与操作发起人，group_id/message_id 供群互动工具使用。
+        只注入工具声明过的参数，避免给严格校验参数的服务端塞多余字段。
+        """
         if not bool(self._get("inject_identity", True)):
             return
         if tool_args is None or not isinstance(tool_args, dict):
@@ -335,18 +342,76 @@ class CatstailYunzaiBridge(Star):
         if not name.startswith(self.tool_prefix):
             return
 
-        sender = ""
-        try:
-            sender = str(event.get_sender_id() or "")
-        except Exception:
-            sender = ""
+        params = self._tool_params(tool)
 
-        if sender.isdigit():
-            tool_args["qq"] = sender
-            self.logger.debug(f"{name}: 注入 qq={sender[:4]}***")
-        else:
+        def accepts(key: str) -> bool:
+            # 拿不到参数定义时退回旧行为：只注入 qq
+            return key == "qq" if params is None else key in params
+
+        def put(key: str, value: str) -> bool:
+            if not value or not value.isdigit() or not accepts(key):
+                return False
+            if key in tool_args:
+                return False
+            tool_args[key] = value
+            return True
+
+        sender = self._safe_str(getattr(event, "get_sender_id", None))
+        group_id = self._safe_str(getattr(event, "get_group_id", None))
+        message_id = self._message_id(event)
+
+        injected: list[str] = []
+        if put("qq", sender):
+            injected.append("qq")
+        elif not sender.isdigit() and accepts("qq"):
             # 非 QQ 平台或取不到发送者时，清掉模型可能编造的 qq
             tool_args.pop("qq", None)
+        if put("group_id", group_id):
+            injected.append("group_id")
+        if put("message_id", message_id):
+            injected.append("message_id")
+
+        if injected:
+            shown = [("qq=" + sender[:4] + "***") if key == "qq" else key for key in injected]
+            self.logger.debug(f"{name}: 注入 {', '.join(shown)}")
+
+    @staticmethod
+    def _safe_str(getter: Any) -> str:
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _message_id(event: AstrMessageEvent) -> str:
+        """取平台原始消息 ID；部分适配器只给 uuid，则视为不可用。"""
+        obj = getattr(event, "message_obj", None)
+        raw = getattr(obj, "raw_message", None)
+        for source in (raw, obj):
+            value = str(getattr(source, "message_id", "") or "").strip()
+            if value.isdigit():
+                return value
+        return ""
+
+    @staticmethod
+    def _tool_params(tool: Any) -> set[str] | None:
+        """读取工具声明的参数名；无法解析时返回 None。"""
+        params = getattr(tool, "parameters", None)
+        if isinstance(params, dict):
+            props = params.get("properties")
+            if isinstance(props, dict):
+                return {str(key) for key in props}
+            return None
+        if isinstance(params, list):
+            names = {
+                str(item["name"])
+                for item in params
+                if isinstance(item, dict) and item.get("name")
+            }
+            return names or None
+        return None
 
     # ------------------------------------------------------------------ commands
 

@@ -6,7 +6,7 @@
 
 - 启动时自动写入/更新 AstrBot 的 MCP 配置（`data/mcp_server.json`）
 - 自动重连：Yunzai 后启动、重启或工具清单变化时可重试
-- 身份注入：调用 `yz_*` 工具前把当前 QQ 写进 `qq` 参数
+- 上下文注入：调用 `yz_*` 工具前把当前 QQ、群号、消息 ID 写进对应参数（只注入工具声明过的字段）
 - 固定提示词：要求先查工具、缺失数据如实说明、面板数据带时间
 - 随插件提供 Skill：`game-data-advisor`
 - 管理指令：`/yz_mcp status|reload|tools`
@@ -44,7 +44,7 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 | `server_name` | `catstail-yunzai` | AstrBot 中的 MCP 服务名 |
 | `auto_register` | `true` | 自动写入并启用 MCP 配置 |
 | `overwrite_existing` | `true` | 配置存在时也重写并重连，使新 Token/地址生效 |
-| `inject_identity` | `true` | 调用 `yz_*` 前注入当前 QQ |
+| `inject_identity` | `true` | 调用 `yz_*` 前注入当前 QQ / 群号 / 消息 ID |
 | `inject_prompt` | `true` | 追加游戏数据规则到系统提示词 |
 | `tool_prefix` | `yz_` | 需要注入身份的工具前缀 |
 | `connect_timeout` | `30` | 连接/清单请求超时（秒） |
