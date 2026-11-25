@@ -25,6 +25,22 @@ SYSTEM_RULES = """【catstail 游戏数据规则】
 9. 贴表情只能使用系统注入的 message_id，禁止编造；没有该参数就请用户重新发一条消息。
 10. 用户用别称、简写、错字或称号称呼角色（如“胡淘”“往生堂堂主”）时，先用对应游戏的 yz_*_alias_resolve 确认是哪个角色，再查面板或圣遗物；解析不到就如实说明，不要猜成其他角色。"""
 
+# 语料工具按数据注册：Yunzai 侧没导入语料就整组不注册，规则也要跟着条件追加，
+# 否则模型会去调用不存在的工具。
+LORE_RULES = """【剧情与语音语料规则】
+- 角色故事、语音台词、成就、名片、地理志、衣装、动物/敌人图鉴、剧情考据，先用 yz_<game>_lore_search 检索，再用 yz_<game>_lore_entry 取全文。
+- 台词问题先 yz_<game>_voice_list 取标题，再用 yz_<game>_voice_line 取原文；返回 candidates（标题命中多条）时把候选交给用户选，不要自行挑一条。
+- lore_entry 返回 next_offset 表示还有后续，需要完整内容就继续按 offset 分页；引用时带上 source 与 source_url，不要改写原文。
+- 检索为空就如实说没有，禁止用自身记忆补全剧情、台词或出处；语料覆盖范围与版本以 yz_lore_sources 为准。"""
+
+# 用于把 yz_<game>_* 工具名折叠成一行提示，避免 20+ 个工具名把系统提示词撑长
+GAME_SEGMENTS = ("gs", "sr", "zzz")
+LORE_TOOL_HINTS = ("_lore_", "_voice_", "yz_lore_")
+
+
+def is_lore_tool(name: str) -> bool:
+    return name.startswith("yz_") and any(hint in name for hint in LORE_TOOL_HINTS)
+
 
 class FatalSyncError(Exception):
     """配置或鉴权错误，重试也不会成功。"""
@@ -326,19 +342,39 @@ class CatstailYunzaiBridge(Star):
     async def inject_rules(self, event: AstrMessageEvent, req: Any) -> None:
         if not bool(self._get("inject_prompt", True)):
             return
-        if not self._mcp_tools():
+        owned = self._mcp_tools()
+        if not owned:
             return
         prompt = getattr(req, "system_prompt", "") or ""
         if PROMPT_MARKER in prompt:
             return
         extra = SYSTEM_RULES
+        if any(is_lore_tool(name) for name in owned):
+            extra += "\n\n" + LORE_RULES
         tools = self._manifest_tool_names()
         if tools:
-            extra += "\n当前可用工具：" + "、".join(tools) + "。"
+            extra += "\n当前可用工具：" + self._tool_summary(tools) + "。"
         try:
             req.system_prompt = (prompt + "\n\n" + extra).strip()
         except Exception:
             self.logger.debug("追加系统提示失败", exc_info=True)
+
+    @staticmethod
+    def _tool_summary(names: list[str]) -> str:
+        """把 yz_<game>_<action> 折叠成 `yz_gs_*: a/b/c`，控制提示词长度。"""
+        groups: dict[str, list[str]] = {}
+        plain: list[str] = []
+        for name in names:
+            head, _, rest = name.partition("_")
+            game, _, action = rest.partition("_")
+            if head == "yz" and action and game in GAME_SEGMENTS:
+                groups.setdefault(game, []).append(action)
+            else:
+                plain.append(name)
+        summary = [f"yz_{game}_*: {'/'.join(actions)}" for game, actions in groups.items()]
+        if plain:
+            summary.append("/".join(plain))
+        return "；".join(summary)
 
     def _manifest_tool_names(self) -> list[str]:
         if not self._manifest:
@@ -505,6 +541,12 @@ class CatstailYunzaiBridge(Star):
 
         tools = self._mcp_tools()
         lines.append(f"工具: {len(tools)} 个")
+        lore_tools = [name for name in tools if is_lore_tool(name)]
+        lines.append(
+            f"语料: {len(lore_tools)} 个工具"
+            if lore_tools
+            else "语料: 未注册（Yunzai 侧未导入 data/lore）"
+        )
 
         if self._manifest:
             lines.append(

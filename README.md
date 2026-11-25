@@ -5,9 +5,10 @@
 ## 功能
 
 - 启动时自动写入/更新 AstrBot 的 MCP 配置（`data/mcp_server.json`）
-- 自动重连：Yunzai 后启动、重启或工具清单变化时可重试
+- 自动重连：Yunzai 后启动或重启时按重试间隔自动连接；Yunzai 侧工具清单变化后执行 `/yz_mcp reload` 刷新
 - 上下文注入：调用 `yz_*` 工具前把当前 QQ、群号、消息 ID 写进对应参数（只注入工具声明过的字段）
 - 固定提示词：要求先查工具、缺失数据如实说明、面板数据带时间；角色别称/简写/错字先走 `yz_*_alias_resolve`
+- 剧情/语音语料：`yz_*_lore_search` / `lore_entry` / `voice_list` / `voice_line` 与 `yz_lore_sources`；Yunzai 侧未导入语料时整组不注册，插件也不会追加语料规则
 - 随插件提供 Skill：`game-data-advisor`
 - 管理指令：`/yz_mcp status|reload|tools`
 
@@ -16,6 +17,7 @@
 1. Yunzai 已安装并启用 `catstail-yunzai-mcp`。
 2. 从 `plugins/catstail-yunzai-mcp/config/config.yaml` 获取自动生成的 Token。
 3. AstrBot 能访问 Yunzai 的 HTTP 地址（同机用 `127.0.0.1`，Docker 用宿主机 IP / 服务名）。
+4. 需要剧情/语音能力时，Yunzai 侧先导入语料（`node plugins/catstail-yunzai-mcp/scripts/lore-import.mjs --from genshin-db --game gs`），否则语料工具不会注册。
 
 ## 安装
 
@@ -70,7 +72,7 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 
 | 指令 | 权限 | 作用 |
 | --- | --- | --- |
-| `/yz_mcp status` | 管理员 | 查看地址、Token 掩码、连接状态、工具数、最近错误 |
+| `/yz_mcp status` | 管理员 | 查看地址、Token 掩码、连接状态、工具数、语料工具数、最近错误 |
 | `/yz_mcp reload` | 管理员 | 重新写入配置并重连 MCP |
 | `/yz_mcp tools` | 管理员 | 列出已注册的 `yz_*` 工具 |
 
@@ -85,9 +87,9 @@ AstrBot 启动
        └─ 失败则按 retry_interval 重试
 
 用户提问
-  ├─ on_llm_request：追加固定规则
-  ├─ 模型调用 yz_gs_player_profile（不填 qq）
-  ├─ on_using_llm_tool：tool_args["qq"] = 当前 QQ
+  ├─ on_llm_request：追加固定规则；存在语料工具时再追加语料规则
+  ├─ 模型调用 yz_gs_player_profile（不填 qq）或 yz_gs_lore_search
+  ├─ on_using_llm_tool：tool_args["qq"] = 当前 QQ（仅注入工具声明过的参数）
   └─ MCP 返回数据，模型基于数据回答
 ```
 
@@ -97,9 +99,11 @@ AstrBot 启动
 | --- | --- |
 | `/yz_mcp status` 未连接 | 检查 `base_url` 是否可达、Yunzai 是否启动、Token 是否一致 |
 | 401 / Token 无效 | 重新复制 `config/config.yaml` 中的 Token，保存后 `/yz_mcp reload` |
-| 工具列表为空 | 查看 AstrBot 日志中的 `MCP 已连接`，确认 Yunzai 侧 9 个工具已注册 |
+| 工具列表为空 | 查看 AstrBot 日志中的 `MCP 已连接`，确认 Yunzai 侧工具已注册（`gs` 下完整为 14 个） |
+| 只有 9 个工具、没有 `lore_*` | 语料组按数据注册：Yunzai 侧未导入 `data/lore` 时属正常现象；已导入则执行 `/yz_mcp reload` 刷新清单 |
 | 模型不调用工具 | 检查人格是否启用了 MCP 工具；确认 `inject_prompt` 未被关闭 |
 | 查不到数据 | 用户是否绑定 UID、是否更新过面板；`stale=true` 时先 `#更新面板` |
+| 剧情/台词答“没有查到” | 语料是否导入、问题是否超出语料范围；用 `yz_lore_sources` 确认版本与覆盖类型 |
 | Docker 连不上宿主机 | 用宿主机内网 IP，或配置 `host.docker.internal` / 同一 compose 网络 |
 
 ## 兼容性
@@ -107,3 +111,5 @@ AstrBot 启动
 - AstrBot `>=4.23.1`（`on_using_llm_tool` 钩子）。
 - 依赖 AstrBot 内部 API：`get_llm_tool_manager()`、`load_mcp_config/save_mcp_config`、`enable_mcp_server/disable_mcp_server`、`mcp_server_runtime_view`。升级 AstrBot 后需回归。
 - 仅处理 `yz_*` 工具；Yunzai 侧已接入原神（`gs`）与星铁（`sr`），绝区零（`zzz`）未接入。
+- 语料工具（`lore_*` / `voice_*` / `yz_lore_sources`）按数据注册，未导入 `data/lore` 时不出现，提示词里的语料规则也会自动省略。
+- 提示词中的工具清单按 `yz_<game>_*` 折叠成一行（如 `yz_gs_*: character_list/.../voice_line`），随 manifest 变化自动刷新。
