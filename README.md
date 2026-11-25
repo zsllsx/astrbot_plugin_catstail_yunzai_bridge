@@ -1,6 +1,6 @@
 # astrbot_plugin_catstail_yunzai_bridge
 
-把 Yunzai 侧的 `catstail-yunzai-mcp` 接入 AstrBot，让 AI 在回答原神角色、武器、面板、圣遗物、练度和活动问题时，基于真实数据而不是模型记忆。
+把 Yunzai 侧的 `catstail-yunzai-mcp` 接入 AstrBot，让 AI 在回答原神/星铁角色、武器（光锥）、面板、圣遗物（遗器）、练度和活动问题时，基于真实数据而不是模型记忆。
 
 ## 功能
 
@@ -106,4 +106,4 @@ AstrBot 启动
 
 - AstrBot `>=4.23.1`（`on_using_llm_tool` 钩子）。
 - 依赖 AstrBot 内部 API：`get_llm_tool_manager()`、`load_mcp_config/save_mcp_config`、`enable_mcp_server/disable_mcp_server`、`mcp_server_runtime_view`。升级 AstrBot 后需回归。
-- 仅处理 `yz_*` 工具；Yunzai 侧目前只支持原神（`gs`）。
+- 仅处理 `yz_*` 工具；Yunzai 侧已接入原神（`gs`）与星铁（`sr`），绝区零（`zzz`）未接入。
