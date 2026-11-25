@@ -74,6 +74,7 @@ skills/game-data-advisor/SKILL.md   # 随插件分发的 Skill
 ## 约定与坑
 
 - **身份注入**：`inject_identity` 只写入工具 schema 里声明过的参数；工具拿不到参数定义时退回只注入 `qq`。
+- **自更新**（2026-11-26）：`/yz_mcp update` = fetch → 对比 → `merge --ff-only` → `restart_process` 自动重启。容器镜像**没有 ssh 客户端**，而 origin 是 SSH 地址，所以必须能回退到 HTTPS（`_https_fallback`），否则 fetch 一定失败。插件目录是 bind mount，容器内 merge 等于改宿主机工作区。
 - **注入优先级**（2026-11-26）：`qq` / `message_id` 强制覆盖模型填的值（模型不可能知道，编造即串号或贴错消息）；`group_id` 仅在模型给的**不是纯数字**或缺失时覆盖，纯数字保留（允许显式操作其他群）。拿不到真实 `message_id` 时主动清空模型值，让服务端返回“缺少 message_id”，而不是让它贴到随机消息上。
 - **`message_id` 在 Yunzai 侧 schema 必须是 optional**：声明为 required 时模型无法提供，会直接拒绝调用工具并回复“没有 message_id”，用户侧表现为贴表情不可用。
 - **连接自愈**（2026-11-26）：AstrBot 核心只在 `anyio.ClosedResourceError` 时重连，而 Yunzai 侧会话 30 分钟 TTL 被回收后抛的是 `McpError("Session terminated")` / `404 Session not found`，导致“失败一次就一直失败”。插件补了兜底：调用前探针（`on_using_llm_tool`，15s TTL 缓存）+ 后台巡检（60s，先查 `/mcp/health` 再探会话）+ `client._reconnect()` 原地重连 + disable/enable 降级 + 10s 冷却；`/yz_mcp reconnect` 可手动强制。巡检同时刷新服务端 `lastSeen`，顺带保活。<br>**注意**：`_reconnect` 是 AstrBot 内部 API，升级要回归；`probe` 用 `session.list_tools()`，别改成不存在的 `send_ping`（本版本 SDK 没有）。

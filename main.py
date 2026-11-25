@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -12,6 +13,9 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
 PROMPT_MARKER = "【catstail 游戏数据规则】"
+
+# 插件自身目录：容器内是 bind mount 的 /AstrBot/data/plugins/astrbot_plugin_catstail_yunzai_bridge
+PLUGIN_DIR = Path(__file__).resolve().parent
 
 SYSTEM_RULES = """【catstail 游戏数据规则】
 1. 涉及原神（gs）的角色、武器、面板、圣遗物、练度、活动时用 yz_gs_* 工具；涉及星铁（sr）的角色、光锥、面板、遗器、练度、活动时用 yz_sr_* 工具。必须先调用工具，不得凭记忆回答。
@@ -737,6 +741,127 @@ class CatstailYunzaiBridge(Star):
             yield event.plain_result("当前没有已注册的 MCP 工具")
             return
         yield event.plain_result("已注册工具:\n" + "\n".join(f"- {name}" for name in tools))
+
+    # ------------------------------------------------------------------ plugin update
+
+    async def _run_git(self, *args: str, timeout: int = 120) -> tuple[int, str]:
+        """在插件目录执行 git。
+
+        容器里插件目录是 Windows bind mount，git 会因属主不一致拒绝操作，
+        所以统一加 `-c safe.directory=*`。
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-c",
+                "safe.directory=*",
+                "-C",
+                str(PLUGIN_DIR),
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            return -1, "容器内没有 git，无法自动更新"
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return -1, "git 执行超时"
+        return proc.returncode, (out or b"").decode("utf-8", "replace").strip()
+
+    async def _restart_after_update(self) -> None:
+        """延迟重启 AstrBot 进程，让新代码生效。"""
+        await asyncio.sleep(1)
+        try:
+            from astrbot.core.process_restart import restart_process
+        except Exception as exc:
+            self.logger.error(f"无法加载重启模块，请手动重启容器: {exc}")
+            return
+        try:
+            await asyncio.to_thread(restart_process, 2)
+        except Exception as exc:
+            self.logger.error(f"自动重启失败，请手动执行 docker restart astrbot: {exc}")
+
+    @staticmethod
+    def _https_fallback(remote_url: str) -> str:
+        """git@github.com:owner/repo.git → https://github.com/owner/repo.git
+
+        容器镜像里通常没有 ssh 客户端，origin 又是 SSH 地址，所以 fetch 失败时用 HTTPS 兜底。
+        """
+        url = str(remote_url or "").strip()
+        if url.startswith("git@"):
+            host, _, path = url[len("git@"):].partition(":")
+            if host and path:
+                return f"https://{host}/{path}"
+        if url.startswith("ssh://git@"):
+            rest = url[len("ssh://git@"):]
+            host, _, path = rest.partition("/")
+            if host and path:
+                return f"https://{host}/{path}"
+        return ""
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @yz_mcp.command("update")
+    async def yz_mcp_update(self, event: AstrMessageEvent):
+        """拉取插件最新代码（默认自动重启生效；加 no-restart 只拉取）"""
+        text = str(getattr(event, "message_str", "") or "")
+        pull_only = ("no-restart" in text) or ("仅拉取" in text)
+
+        if not (PLUGIN_DIR / ".git").exists():
+            yield event.plain_result("插件目录不是 git 仓库，无法自动更新（请在面板里更新）")
+            return
+
+        code, branch = await self._run_git("rev-parse", "--abbrev-ref", "HEAD", timeout=20)
+        branch = branch.strip() if code == 0 else ""
+        if not branch or branch == "HEAD":
+            yield event.plain_result(f"读取当前分支失败:\n{branch}")
+            return
+
+        yield event.plain_result(f"正在检查 {branch} 分支更新…")
+
+        remote_ref = f"origin/{branch}"
+        code, out = await self._run_git("fetch", "--prune", "origin", branch)
+        if code != 0:
+            # 容器内没有 ssh：把 origin 换成 HTTPS 再试一次
+            code_url, remote_url = await self._run_git("remote", "get-url", "origin", timeout=20)
+            fallback = self._https_fallback(remote_url) if code_url == 0 else ""
+            if not fallback:
+                yield event.plain_result(f"git fetch 失败:\n{out[:500]}")
+                return
+            yield event.plain_result("origin 拉取失败，改用 HTTPS 重试…")
+            code, out = await self._run_git("fetch", "--prune", fallback, branch)
+            if code != 0:
+                yield event.plain_result(f"HTTPS 拉取失败:\n{out[:500]}")
+                return
+            remote_ref = "FETCH_HEAD"
+
+        code_a, head = await self._run_git("rev-parse", "--short", "HEAD", timeout=20)
+        code_b, remote = await self._run_git("rev-parse", "--short", remote_ref, timeout=20)
+        if code_a != 0 or code_b != 0:
+            yield event.plain_result("读取提交号失败，已中止")
+            return
+        head = head.strip()
+        remote = remote.strip()
+        if head == remote:
+            yield event.plain_result(f"已是最新版本（{head}）")
+            return
+
+        if pull_only:
+            yield event.plain_result(f"发现新版本 {head} → {remote}，已跳过合并（no-restart）")
+            return
+
+        code, out = await self._run_git("merge", "--ff-only", remote_ref)
+        if code != 0:
+            yield event.plain_result(
+                f"更新失败（本地有改动或分支已分叉）:\n{out[:600]}\n"
+                "请在服务器上手动处理后再试"
+            )
+            return
+
+        yield event.plain_result(f"更新完成 {head} → {remote}\n{out[:600]}")
+        yield event.plain_result("3 秒后自动重启 AstrBot 使新代码生效…")
+        asyncio.create_task(self._restart_after_update())
 
     # ------------------------------------------------------------------ status
 

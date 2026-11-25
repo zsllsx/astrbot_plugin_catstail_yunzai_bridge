@@ -76,6 +76,23 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 | `/yz_mcp reload` | 管理员 | 重新写入配置并重连 MCP |
 | `/yz_mcp reconnect` | 管理员 | 立即自愈连接（不重写配置） |
 | `/yz_mcp tools` | 管理员 | 列出已注册的 `yz_*` 工具 |
+| `/yz_mcp update` | 管理员 | 拉取插件最新代码，然后自动重启 AstrBot 生效 |
+| `/yz_mcp update no-restart` | 管理员 | 只检查/拉取，不重启（想自己挑时间重启时用） |
+
+## 插件自更新
+
+容器里管理面板更新不便时，可以直接在群里拉代码：
+
+```text
+/yz_mcp update
+```
+
+1. `git fetch` 当前分支 —— 容器镜像通常没装 ssh，而 `origin` 是 SSH 地址，会自动改用 HTTPS 重试（公开仓库无需凭据）；
+2. 对比 `HEAD` 与远端提交，相同就直接回「已是最新版本」；
+3. 有更新则 `git merge --ff-only`（不做合并提交，本地有改动/分叉会直接失败并回报）；
+4. 回复 `旧提交 → 新提交` 与变更文件，再调用 AstrBot 内置 `restart_process` 自动重启，新代码即时生效。
+
+注意：插件目录是 bind mount，容器内 `git` 操作会直接改宿主机工作区，与在宿主机执行等价；重启期间 AstrBot 会有几秒不可用。
 
 ## 连接自愈
 
