@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import time
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,12 @@ LORE_TOOL_HINTS = ("_lore_", "_voice_", "yz_lore_")
 
 def is_lore_tool(name: str) -> bool:
     return name.startswith("yz_") and any(hint in name for hint in LORE_TOOL_HINTS)
+
+
+def _on_plugin_loaded():
+    """兼容没有 on_plugin_loaded 钩子的 AstrBot 版本（缺省退化为 no-op）。"""
+    deco = getattr(filter, "on_plugin_loaded", None)
+    return deco() if deco else (lambda fn: fn)
 
 
 class FatalSyncError(Exception):
@@ -124,6 +131,24 @@ class CatstailYunzaiBridge(Star):
             "sse_read_timeout": self._as_int("sse_read_timeout", 1800, 30, 1800),
             "active": True,
         }
+
+    @staticmethod
+    def _header_auth(server_cfg: Any) -> str:
+        """取 MCP 配置里真正会发出去的 Authorization 串。"""
+        if not isinstance(server_cfg, dict):
+            return ""
+        headers = server_cfg.get("headers")
+        if not isinstance(headers, dict):
+            return ""
+        return str(headers.get("Authorization") or "")
+
+    @staticmethod
+    def _fingerprint(auth_header: str) -> str:
+        """Token 指纹，只用于比对，不泄漏原值。"""
+        token = str(auth_header or "").split(" ", 1)[-1].strip()
+        if not token:
+            return "未配置"
+        return hashlib.sha256(token.encode()).hexdigest()[:8]
 
     # ------------------------------------------------------------------ manifest
 
@@ -234,9 +259,23 @@ class CatstailYunzaiBridge(Star):
                 current["mcpServers"] = servers
 
             existing = servers.get(name)
+            if not isinstance(existing, dict):
+                existing = None
             same = existing == server_cfg
             runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {}) or {}
             connected = name in runtime_view
+
+            # 磁盘配置里的 Authorization 才是真正发出去的 token（不是插件配置项）。
+            # 两者不一致时硬件要求重写并重连：否则会出现「配置改了、重启了，
+            # 发出去的还是旧 Token」的 401。
+            disk_auth = self._header_auth(existing)
+            want_auth = self._header_auth(server_cfg)
+            if existing is not None and disk_auth != want_auth:
+                self.logger.warning(
+                    f"MCP 实际使用 Token 与插件配置不一致（磁盘 {self._fingerprint(disk_auth)}"
+                    f" → 期望 {self._fingerprint(want_auth)}），强制重写并重连"
+                )
+                force = True
 
             if same and connected and not force:
                 self.logger.debug(f"MCP 配置未变化且已连接: {name}")
@@ -491,14 +530,8 @@ class CatstailYunzaiBridge(Star):
 
     # ------------------------------------------------------------------ hooks
 
-    @filter.on_astrbot_loaded()
-    async def on_astrbot_loaded(self) -> None:
-        if not self.enabled:
-            self.logger.info("桥接已禁用")
-            return
-        await self._restore_manifest()
-        if not bool(self._get("auto_register", True)) and not self._get("token", ""):
-            return
+    def _start_background(self) -> None:
+        """启动后台同步与巡检；幂等，热重载后可安全重复调用。"""
         if not (self._watch_task and not self._watch_task.done()):
             self._watch_task = asyncio.create_task(
                 self._watch_loop(), name="catstail-yunzai-health"
@@ -508,6 +541,32 @@ class CatstailYunzaiBridge(Star):
         self._sync_task = asyncio.create_task(
             self._background_sync(), name="catstail-yunzai-sync"
         )
+
+    @filter.on_astrbot_loaded()
+    async def on_astrbot_loaded(self) -> None:
+        if not self.enabled:
+            self.logger.info("桥接已禁用")
+            return
+        await self._restore_manifest()
+        if not bool(self._get("auto_register", True)) and not self._get("token", ""):
+            return
+        self._start_background()
+
+    @_on_plugin_loaded()
+    async def on_plugin_loaded(self, metadata: Any = None) -> None:
+        """插件重载后重新同步一次。
+
+        `on_astrbot_loaded` 只在 AstrBot 进程启动时派发一次；WebUI 改完 Token
+        触发的插件重载不会跑同步，`data/mcp_server.json` 就会一直停留在旧 Token，
+        表现为「配置改了、插件也重载了，发出去的还是旧值」。
+        """
+        if not self.enabled:
+            return
+        name = str(getattr(metadata, "name", "") or "").lower()
+        if name and name != PLUGIN_DIR.name.lower() and "catstail" not in name:
+            return
+        await self._restore_manifest()
+        self._start_background()
 
     @filter.on_using_llm_tool()
     async def guard_connection(
@@ -875,6 +934,7 @@ class CatstailYunzaiBridge(Star):
 
         token = str(self._get("token", "")).strip()
         lines.append(f"Token: {self._mask(token)}")
+        lines.append(self._token_line(token))
         lines.append(f"服务名: {self.server_name}")
 
         connected = False
@@ -918,6 +978,23 @@ class CatstailYunzaiBridge(Star):
         if self._last_error:
             lines.append(f"最近错误: {self._last_error}")
         return "\n".join(lines)
+
+    def _token_line(self, token: str) -> str:
+        """比对「插件配置里的 Token」与「真正发出去的 Token」。
+
+        模型/用户看到的配置项不一定是 MCP 客户端在用的那个值：真正发出去的是
+        data/mcp_server.json 里写入的 Authorization。两者不一致时，Yunzai 侧
+        必然 401，而改配置、重装都看不出原因。
+        """
+        want = self._fingerprint(f"Bearer {token}")
+        try:
+            disk = self.context.get_llm_tool_manager().load_mcp_config() or {}
+            entry = (disk.get("mcpServers") or {}).get(self.server_name) or {}
+            actual = self._fingerprint(self._header_auth(entry))
+        except Exception:
+            actual = "读取失败"
+        flag = "" if want == actual else "  ← 不一致，执行 /yz_mcp reload"
+        return f"Token 指纹: 配置 {want} / 磁盘 {actual}{flag}"
 
     @staticmethod
     def _mask(token: str) -> str:
