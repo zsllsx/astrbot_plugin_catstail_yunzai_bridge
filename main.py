@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import os
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -69,7 +71,10 @@ class CatstailYunzaiBridge(Star):
         self._last_probe: float = 0.0
         self._last_error: str | None = None
         self._last_success: float | None = None
+        self._last_resync: float = 0.0
+        self._warned_loopback: bool = False
         self._manifest: dict[str, Any] | None = None
+        self._tools_cache: tuple[float, list[str]] | None = None
 
     # ------------------------------------------------------------------ config
 
@@ -116,10 +121,29 @@ class CatstailYunzaiBridge(Star):
     def _manifest_url(self) -> str:
         return self._mcp_url().rstrip("/") + "/manifest"
 
-    def _token(self) -> str:
+    def _effective_token(self) -> str:
+        """实际使用的 Token：插件配置优先，缺失时回退环境变量。
+
+        AstrBot 在插件安装失败、或在面板里删除重装时会连 `_config.json` 一起删掉，
+        配置项回到空值；此时若没有兜底，任何一次重装都会永久失去连接能力。
+        """
         token = str(self._get("token", "")).strip()
+        if token:
+            return token
+        return os.environ.get("CATSTAIL_MCP_TOKEN", "").strip()
+
+    def _token_source(self) -> str:
+        if str(self._get("token", "")).strip():
+            return "配置"
+        return "环境变量" if os.environ.get("CATSTAIL_MCP_TOKEN", "").strip() else "未配置"
+
+    def _token(self) -> str:
+        token = self._effective_token()
         if not token:
-            raise FatalSyncError("未配置 MCP Token，请填写 Yunzai 插件生成的 Token")
+            raise FatalSyncError(
+                "未配置 MCP Token：请在插件配置中填写 Yunzai 生成的 Token，"
+                "或为容器设置环境变量 CATSTAIL_MCP_TOKEN"
+            )
         return token
 
     def _server_config(self) -> dict[str, Any]:
@@ -150,6 +174,49 @@ class CatstailYunzaiBridge(Star):
             return "未配置"
         return hashlib.sha256(token.encode()).hexdigest()[:8]
 
+    def _warn_loopback(self) -> None:
+        """容器内用 127.0.0.1 一定连不到宿主机上的 Yunzai，提前说清楚。"""
+        if self._warned_loopback:
+            return
+        self._warned_loopback = True
+        in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        if not in_container:
+            return
+        try:
+            host = (urlparse(self._mcp_url()).hostname or "").lower()
+        except Exception:
+            return
+        if host in ("127.0.0.1", "localhost", "::1"):
+            self.logger.warning(
+                f"base_url 指向 {host}，在容器里这是容器自身，连不到宿主机上的 Yunzai。"
+                "请改成 host.docker.internal 或宿主机内网 IP"
+                "（Linux Docker 需为容器加 --add-host=host.docker.internal:host-gateway）"
+            )
+
+    def _runtime_entry(self) -> Any:
+        """取本服务在 AstrBot 运行时表里的条目（可能为 None）。"""
+        try:
+            runtime = self.context.get_llm_tool_manager().mcp_server_runtime_view or {}
+            return runtime.get(self.server_name)
+        except Exception:
+            return None
+
+    def _connected(self) -> bool:
+        """运行时是否真的可用。
+
+        不能只看「名字在 mcp_server_runtime_view 里」：生命周期任务已经结束、
+        但条目尚未清理时仍会命中，于是 `_apply` 误判为“已连接且配置未变”而跳过
+        重连，连接就永久坏在“已连接”状态。
+        """
+        entry = self._runtime_entry()
+        if entry is None:
+            return False
+        task = getattr(entry, "lifecycle_task", None)
+        done = getattr(task, "done", None)
+        if task is not None and callable(done) and done():
+            return False
+        return True
+
     # ------------------------------------------------------------------ manifest
 
     async def _fetch_manifest(self) -> dict[str, Any]:
@@ -178,6 +245,8 @@ class CatstailYunzaiBridge(Star):
             raise RuntimeError("manifest 请求超时") from exc
         except aiohttp.ClientError as exc:
             raise RuntimeError(f"manifest 请求失败: {exc}") from exc
+        except ValueError as exc:
+            raise RuntimeError(f"manifest 返回的不是合法 JSON: {exc}") from exc
 
         if not isinstance(data, dict):
             raise RuntimeError("manifest 返回格式异常")
@@ -228,6 +297,7 @@ class CatstailYunzaiBridge(Star):
     async def _apply(self, force: bool = False) -> None:
         if not self.enabled:
             return
+        self._warn_loopback()
 
         async with self._sync_lock:
             server_cfg = self._server_config()
@@ -249,6 +319,12 @@ class CatstailYunzaiBridge(Star):
                 return
 
             tool_mgr = self.context.get_llm_tool_manager()
+            for method in ("load_mcp_config", "save_mcp_config", "enable_mcp_server"):
+                if not hasattr(tool_mgr, method):
+                    raise FatalSyncError(
+                        f"当前 AstrBot 版本缺少 FunctionToolManager.{method}，"
+                        "无法自动写入 MCP 配置；请升级到 >=4.23.1 或在面板手工配置"
+                    )
             current = tool_mgr.load_mcp_config()
             if not isinstance(current, dict):
                 current = {}
@@ -262,11 +338,10 @@ class CatstailYunzaiBridge(Star):
             if not isinstance(existing, dict):
                 existing = None
             same = existing == server_cfg
-            runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {}) or {}
-            connected = name in runtime_view
+            connected = self._connected()
 
             # 磁盘配置里的 Authorization 才是真正发出去的 token（不是插件配置项）。
-            # 两者不一致时硬件要求重写并重连：否则会出现「配置改了、重启了，
+            # 两者不一致时强制重写并重连：否则会出现「配置改了、重启了，
             # 发出去的还是旧 Token」的 401。
             disk_auth = self._header_auth(existing)
             want_auth = self._header_auth(server_cfg)
@@ -290,11 +365,13 @@ class CatstailYunzaiBridge(Star):
             if not tool_mgr.save_mcp_config(current):
                 raise RuntimeError("写入 data/mcp_server.json 失败")
 
-            if connected:
+            # 只要有残留条目就尝试关闭：生命周期任务已结束但条目未清理时，
+            # enable 同一个名字可能直接冲突，这里顺手清掉。
+            if self._runtime_entry() is not None:
                 try:
                     await tool_mgr.disable_mcp_server(name, timeout=10)
                 except Exception as exc:
-                    raise RuntimeError(f"关闭旧 MCP 连接失败: {exc}") from exc
+                    self.logger.warning(f"关闭旧 MCP 连接失败（继续重建）: {exc}")
 
             timeout = self._as_int("enable_timeout", 30, 3, 120)
             try:
@@ -302,10 +379,12 @@ class CatstailYunzaiBridge(Star):
             except Exception as exc:
                 raise RuntimeError(f"启用 MCP 服务失败: {exc}") from exc
 
-            runtime_view = getattr(tool_mgr, "mcp_server_runtime_view", {}) or {}
-            if name not in runtime_view:
-                raise RuntimeError("MCP 服务未出现在运行时列表，可能仍在初始化")
+            if not self._connected():
+                raise RuntimeError(
+                    "MCP 服务未出现在运行时列表，或生命周期任务已结束（可能仍在初始化）"
+                )
 
+            self._tools_cache = None
             tools = self._mcp_tools()
             self._last_error = None
             self._last_success = time.time()
@@ -325,8 +404,24 @@ class CatstailYunzaiBridge(Star):
             seen.add(id(item))
             item = nxt
 
+    _TOOLS_CACHE_TTL = 3.0
+
     def _mcp_tools(self) -> list[str]:
-        """列出属于本 MCP 服务的工具名。
+        """列出属于本 MCP 服务的工具名（带短缓存）。
+
+        inject_identity / guard_connection / inject_rules 会在每次工具调用与 LLM
+        请求时调用；上游 func_list 可能有上百个工具，逐个解包包装层是纯浪费，
+        因此缓存 3 秒，配置变更/重连后主动失效。
+        """
+        cached = self._tools_cache
+        if cached is not None and time.time() - cached[0] < self._TOOLS_CACHE_TTL:
+            return list(cached[1])
+        names = self._scan_mcp_tools()
+        self._tools_cache = (time.time(), names)
+        return list(names)
+
+    def _scan_mcp_tools(self) -> list[str]:
+        """扫描 func_list 得到本服务的工具名。
 
         框架可能把工具包装成 _PermissionGuardedTool，包装层只复制 name 而丢掉
         mcp_server_name，因此先解包再比对；解包后仍无法判定归属时退回工具名前缀。
@@ -392,6 +487,11 @@ class CatstailYunzaiBridge(Star):
         优先用官方兼容视图 mcp_client_dict；拿不到就从工具对象上的 mcp_client
         反查，避免依赖某个版本的内部字典结构。
         """
+        entry = self._runtime_entry()
+        if entry is not None:
+            client = getattr(entry, "client", None)
+            if client is not None:
+                return client
         try:
             mgr = self.context.get_llm_tool_manager()
         except Exception:
@@ -451,6 +551,27 @@ class CatstailYunzaiBridge(Star):
     def _mark_ok(self) -> None:
         self._last_error = None
         self._last_success = time.time()
+        self._tools_cache = None
+
+    _RESYNC_INTERVAL = 300.0
+
+    def _resync_if_due(self) -> None:
+        """没有运行时连接时，定期重跑一次完整同步（带 5 分钟节流）。
+
+        Token 是后续补上的、或某次 enable 失败后，运行时会一直“无连接”，
+        只靠 `_heal` 的原地重连救不回来（它需要已存在的 client）。
+        没有这个兜底就只能重启 AstrBot。
+        """
+        if self._sync_task and not self._sync_task.done():
+            return
+        now = time.time()
+        if now - self._last_resync < self._RESYNC_INTERVAL:
+            return
+        self._last_resync = now
+        self.logger.info("MCP 仍未连接，重新触发一次同步")
+        self._sync_task = asyncio.create_task(
+            self._background_sync(), name="catstail-yunzai-sync"
+        )
 
     async def _heal(self, reason: str, force: bool = False) -> bool:
         """修复 MCP 连接。
@@ -498,6 +619,8 @@ class CatstailYunzaiBridge(Star):
         self._last_probe = now
         client = self._our_client()
         if client is None:
+            # 没有运行时连接（Token 刚补上 / 上次 enable 失败），触发一次带节流的重建
+            self._resync_if_due()
             return
         if await self._probe(client):
             return
@@ -512,7 +635,7 @@ class CatstailYunzaiBridge(Star):
             return
         client = self._our_client()
         if client is None:
-            await self._heal("服务未出现在运行时列表")
+            self._resync_if_due()
             return
         if not await self._probe(client):
             await self._heal("后台巡检探针失败")
@@ -548,8 +671,6 @@ class CatstailYunzaiBridge(Star):
             self.logger.info("桥接已禁用")
             return
         await self._restore_manifest()
-        if not bool(self._get("auto_register", True)) and not self._get("token", ""):
-            return
         self._start_background()
 
     @_on_plugin_loaded()
@@ -562,11 +683,25 @@ class CatstailYunzaiBridge(Star):
         """
         if not self.enabled:
             return
-        name = str(getattr(metadata, "name", "") or "").lower()
-        if name and name != PLUGIN_DIR.name.lower() and "catstail" not in name:
+        if not self._is_self_metadata(metadata):
             return
         await self._restore_manifest()
         self._start_background()
+
+    @staticmethod
+    def _is_self_metadata(metadata: Any) -> bool:
+        """on_plugin_loaded 是全局派发的，只处理本插件自己的加载。
+
+        `root_dir_name` 比 `metadata.name` 更可靠：AstrBot 用目录名定位
+        `<dir>_config.json`，两者不一致时插件自身就会出问题。
+        """
+        if metadata is None:
+            return True
+        root = str(getattr(metadata, "root_dir_name", "") or "").lower()
+        if root:
+            return root == PLUGIN_DIR.name.lower()
+        name = str(getattr(metadata, "name", "") or "").lower()
+        return not name or name == PLUGIN_DIR.name.lower() or "catstail" in name
 
     @filter.on_using_llm_tool()
     async def guard_connection(
@@ -907,7 +1042,10 @@ class CatstailYunzaiBridge(Star):
             return
 
         if pull_only:
-            yield event.plain_result(f"发现新版本 {head} → {remote}，已跳过合并（no-restart）")
+            yield event.plain_result(
+                f"发现新版本 {head} → {remote}，仅检查未应用（no-restart）\n"
+                "去掉 no-restart 再执行一次即可更新"
+            )
             return
 
         code, out = await self._run_git("merge", "--ff-only", remote_ref)
@@ -932,17 +1070,12 @@ class CatstailYunzaiBridge(Star):
         except Exception as exc:
             lines.append(f"地址: 配置异常（{exc}）")
 
-        token = str(self._get("token", "")).strip()
-        lines.append(f"Token: {self._mask(token)}")
+        token = self._effective_token()
+        lines.append(f"Token: {self._mask(token)}（来源: {self._token_source()}）")
         lines.append(self._token_line(token))
         lines.append(f"服务名: {self.server_name}")
 
-        connected = False
-        try:
-            runtime_view = self.context.get_llm_tool_manager().mcp_server_runtime_view or {}
-            connected = self.server_name in runtime_view
-        except Exception:
-            pass
+        connected = self._connected()
         lines.append(f"连接: {'已连接' if connected else '未连接'}")
 
         tools = self._mcp_tools()
@@ -998,11 +1131,12 @@ class CatstailYunzaiBridge(Star):
 
     @staticmethod
     def _mask(token: str) -> str:
+        """只露前 4 位 + 长度：够核对，又不把后 4 位（熵最高的部分之一）带进群聊。"""
         if not token:
             return "未配置"
         if len(token) <= 8:
-            return "****"
-        return token[:4] + "****" + token[-4:]
+            return f"****（{len(token)} 位）"
+        return f"{token[:4]}****（{len(token)} 位）"
 
     async def terminate(self) -> None:
         task = self._sync_task

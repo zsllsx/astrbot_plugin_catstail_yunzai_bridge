@@ -42,7 +42,7 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 | `enabled` | `true` | 总开关 |
 | `base_url` | `http://127.0.0.1:2536` | Yunzai 地址，不带 `/mcp` |
 | `mcp_path` | `/mcp` | MCP 路由路径 |
-| `token` | 空 | Yunzai 插件生成的 Token |
+| `token` | 空 | Yunzai 插件生成的 Token；留空时回退环境变量 `CATSTAIL_MCP_TOKEN` |
 | `server_name` | `catstail-yunzai` | AstrBot 中的 MCP 服务名 |
 | `auto_register` | `true` | 自动写入并启用 MCP 配置 |
 | `overwrite_existing` | `true` | 配置存在时也重写并重连，使新 Token/地址生效 |
@@ -51,7 +51,7 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 | `tool_prefix` | `yz_` | 需要注入身份的工具前缀 |
 | `connect_timeout` | `30` | 连接/清单请求超时（秒） |
 | `enable_timeout` | `30` | 动态启用 MCP 超时（秒） |
-| `sse_read_timeout` | `300` | MCP 读取超时（秒） |
+| `sse_read_timeout` | `1800` | MCP 读取超时（秒），建议 ≥ 900 |
 | `retry_max` | `10` | 启动连接失败的最大尝试次数 |
 | `retry_interval` | `15` | 重试间隔（秒） |
 
@@ -130,6 +130,9 @@ AstrBot 启动
 | --- | --- |
 | `/yz_mcp status` 未连接 | 检查 `base_url` 是否可达、Yunzai 是否启动、Token 是否一致 |
 | 401 / Token 无效 | 重新复制 `config/config.yaml` 中的 Token，保存后 `/yz_mcp reload` |
+| `status` 里「Token 指纹: 配置 X / 磁盘 Y」不一致 | 配置改了但 `data/mcp_server.json` 还是旧值，执行 `/yz_mcp reload`（插件重载时也会自动纠正） |
+| 改完 Token 仍 401，且 Yunzai 日志显示收到的是旧 Token | 实际发送的是 `data/mcp_server.json` 里的 `Authorization`，不是插件配置项；重启 AstrBot 或 `/yz_mcp reload` 才会重写 |
+| 重装插件后配置里的 Token 变空 | AstrBot 安装失败时会删除 `_config.json`；重填 Token，或给容器设置 `CATSTAIL_MCP_TOKEN` 兜底 |
 | 工具列表为空 | 查看 AstrBot 日志中的 `MCP 已连接`，确认 Yunzai 侧工具已注册（`gs` 下完整为 14 个） |
 | 只有 9 个工具、没有 `lore_*` | 语料组按数据注册：Yunzai 侧未导入 `data/lore` 时属正常现象；已导入则执行 `/yz_mcp reload` 刷新清单 |
 | 模型不调用工具 | 检查人格是否启用了 MCP 工具；确认 `inject_prompt` 未被关闭 |
@@ -143,7 +146,8 @@ AstrBot 启动
 ## 兼容性
 
 - AstrBot `>=4.23.1`（`on_using_llm_tool` 钩子）。
-- 依赖 AstrBot 内部 API：`get_llm_tool_manager()`、`load_mcp_config/save_mcp_config`、`enable_mcp_server/disable_mcp_server`、`mcp_server_runtime_view`。升级 AstrBot 后需回归。
+- 依赖 AstrBot 内部 API：`get_llm_tool_manager()`、`load_mcp_config/save_mcp_config`、`enable_mcp_server/disable_mcp_server`、`mcp_server_runtime_view`。启动时会检查这些方法是否存在，缺失会明确报错而不是静默失败；升级 AstrBot 后需回归。
+- 插件重载后会通过 `on_plugin_loaded` 重新同步 MCP 配置（老版本只在进程启动时同步一次）。
 - 仅处理 `yz_*` 工具；Yunzai 侧已接入原神（`gs`）与星铁（`sr`），绝区零（`zzz`）未接入。
 - 语料工具（`lore_*` / `voice_*` / `yz_lore_sources`）按数据注册，未导入 `data/lore` 时不出现，提示词里的语料规则也会自动省略。
 - 提示词中的工具清单按 `yz_<game>_*` 折叠成一行（如 `yz_gs_*: character_list/.../voice_line`），随 manifest 变化自动刷新。
