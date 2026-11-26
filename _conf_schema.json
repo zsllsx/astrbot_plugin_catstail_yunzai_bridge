@@ -1,103 +1,103 @@
 {
-    "enabled": {
-        "type": "bool",
-        "description": "启用桥接",
-        "default": true
-    },
-    "base_url": {
-        "type": "string",
-        "description": "Yunzai 地址，例如 http://172.20.0.1:2536（容器访宿主机）或 https://bot.example.com；环境变量 CATSTAIL_MCP_URL 优先",
-        "default": "http://127.0.0.1:2536"
-    },
-    "mcp_path": {
-        "type": "string",
-        "description": "MCP 路由路径",
-        "default": "/mcp"
-    },
-    "token": {
-        "type": "string",
-        "description": "凭据。既可以是 MCP 自己的 Token（Yunzai 插件 config/config.yaml），也可以是 Yunzai 的 server.auth 值（authMode=yunzai 单凭据模式）；填 Bearer xxx 整串也可，不会重复加前缀",
-        "default": "",
-        "secret": true
-    },
-    "server_name": {
-        "type": "string",
-        "description": "在 AstrBot 中显示的 MCP 服务名",
-        "default": "catstail-yunzai"
-    },
-    "auto_register": {
-        "type": "bool",
-        "description": "启动时自动写入并启用 MCP 配置（依赖 AstrBot 内部 API）",
-        "default": true
-    },
-    "overwrite_existing": {
-        "type": "bool",
-        "description": "配置存在时也重新写入并重连，使新 Token/地址/工具生效",
-        "default": true
-    },
-    "inject_identity": {
-        "type": "bool",
-        "description": "调用 yz_* 工具前注入当前 QQ、群号与消息 ID（只注入工具声明过的参数）",
-        "default": true
-    },
-    "inject_prompt": {
-        "type": "bool",
-        "description": "向系统提示词追加游戏数据使用规则",
-        "default": true
-    },
-    "tool_prefix": {
-        "type": "string",
-        "description": "需要注入身份的工具名前缀",
-        "default": "yz_"
-    },
-    "connect_timeout": {
-        "type": "int",
-        "description": "MCP 连接超时（秒）",
-        "default": 30
-    },
-    "enable_timeout": {
-        "type": "int",
-        "description": "动态启用 MCP 的超时（秒）",
-        "default": 30
-    },
-    "sse_read_timeout": {
-        "type": "int",
-        "description": "MCP 读取超时（秒）；越短越容易在空闲后被服务端断流，建议 ≥ 900",
-        "default": 1800
-    },
-    "auto_heal": {
-        "type": "bool",
-        "description": "连接自愈：调用前探针 + 后台巡检，发现会话失效自动重连",
-        "default": true
-    },
-    "health_interval": {
-        "type": "int",
-        "description": "后台巡检间隔（秒）；需小于 Yunzai 侧 30 分钟会话 TTL 才能起到保活作用",
-        "default": 60
-    },
-    "probe_interval": {
-        "type": "int",
-        "description": "调用前探针缓存时间（秒），同一时间窗内只探一次",
-        "default": 15
-    },
-    "probe_timeout": {
-        "type": "int",
-        "description": "单次探针超时（秒）",
-        "default": 8
-    },
-    "heal_cooldown": {
-        "type": "int",
-        "description": "自愈冷却（秒），避免连续失败时反复重连",
-        "default": 10
-    },
-    "retry_max": {
-        "type": "int",
-        "description": "启动时连接失败的最大尝试次数",
-        "default": 10
-    },
-    "retry_interval": {
-        "type": "int",
-        "description": "重试间隔（秒）",
-        "default": 15
-    }
+  "enabled": {
+    "type": "bool",
+    "description": "启用桥接",
+    "default": true
+  },
+  "base_url": {
+    "type": "string",
+    "description": "Yunzai 地址，例如 http://172.20.0.1:2536（容器访宿主机）或 https://bot.example.com；环境变量 CATSTAIL_MCP_URL 优先",
+    "default": "http://127.0.0.1:2536"
+  },
+  "mcp_path": {
+    "type": "string",
+    "description": "MCP 路由路径",
+    "default": "/mcp"
+  },
+  "token": {
+    "type": "string",
+    "description": "凭据。既可以是 MCP 自己的 Token（Yunzai 插件 config/config.yaml），也可以是 Yunzai 的 server.auth 值（authMode=yunzai 单凭据模式）；填 Bearer xxx 整串也可，不会重复加前缀",
+    "default": "",
+    "secret": true
+  },
+  "server_name": {
+    "type": "string",
+    "description": "在 AstrBot 中显示的 MCP 服务名",
+    "default": "catstail-yunzai"
+  },
+  "auto_register": {
+    "type": "bool",
+    "description": "启动时自动写入并启用 MCP 配置（依赖 AstrBot 内部 API）",
+    "default": true
+  },
+  "overwrite_existing": {
+    "type": "bool",
+    "description": "配置存在时也重新写入并重连，使新 Token/地址/工具生效",
+    "default": true
+  },
+  "inject_identity": {
+    "type": "bool",
+    "description": "调用 yz_* 工具前注入当前 QQ、群号与消息 ID（只注入工具声明过的参数）",
+    "default": true
+  },
+  "inject_prompt": {
+    "type": "bool",
+    "description": "向系统提示词追加游戏数据使用规则",
+    "default": true
+  },
+  "tool_prefix": {
+    "type": "string",
+    "description": "需要注入身份的工具名前缀",
+    "default": "yz_"
+  },
+  "connect_timeout": {
+    "type": "int",
+    "description": "MCP 连接超时（秒）",
+    "default": 30
+  },
+  "enable_timeout": {
+    "type": "int",
+    "description": "动态启用 MCP 的超时（秒）",
+    "default": 30
+  },
+  "sse_read_timeout": {
+    "type": "int",
+    "description": "MCP 读取超时（秒）；越短越容易在空闲后被服务端断流，建议 ≥ 900",
+    "default": 1800
+  },
+  "auto_heal": {
+    "type": "bool",
+    "description": "连接自愈：调用前探针 + 后台巡检，发现会话失效自动重连",
+    "default": true
+  },
+  "health_interval": {
+    "type": "int",
+    "description": "后台巡检间隔（秒）；需小于 Yunzai 侧 30 分钟会话 TTL 才能起到保活作用",
+    "default": 60
+  },
+  "probe_interval": {
+    "type": "int",
+    "description": "调用前探针缓存时间（秒），同一时间窗内只探一次",
+    "default": 15
+  },
+  "probe_timeout": {
+    "type": "int",
+    "description": "单次探针超时（秒）",
+    "default": 8
+  },
+  "heal_cooldown": {
+    "type": "int",
+    "description": "自愈冷却（秒），避免连续失败时反复重连",
+    "default": 10
+  },
+  "retry_max": {
+    "type": "int",
+    "description": "启动时连接失败的最大尝试次数",
+    "default": 10
+  },
+  "retry_interval": {
+    "type": "int",
+    "description": "重试间隔（秒）",
+    "default": 15
+  }
 }
