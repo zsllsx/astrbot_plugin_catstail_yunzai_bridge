@@ -16,7 +16,7 @@
   },
   "token": {
     "type": "string",
-    "description": "凭据。既可以是 MCP 自己的 Token（Yunzai 插件 config/config.yaml），也可以是 Yunzai 的 server.auth 值（authMode=yunzai 单凭据模式）；填 Bearer xxx 整串也可，不会重复加前缀",
+    "description": "凭据：填 Yunzai config/config/server.yaml 里 auth 的值（Bearer 之后那段）。/mcp 与其它 Yunzai HTTP 接口共用这份凭据，插件不再有独立 Token；填 Bearer xxx 整串也可，不会重复加前缀",
     "default": "",
     "secret": true
   },

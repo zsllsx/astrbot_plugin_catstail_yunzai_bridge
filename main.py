@@ -157,7 +157,8 @@ class CatstailYunzaiBridge(Star):
         token = self._effective_token()
         if not token:
             raise FatalSyncError(
-                "未配置 MCP Token：请在插件配置中填写 Yunzai 生成的 Token，"
+                "未配置 MCP 凭据：请在插件配置中填写 Yunzai server.auth 中的凭据"
+                "（config/config/server.yaml 里 Bearer 之后那段），"
                 "或为容器设置环境变量 CATSTAIL_MCP_TOKEN"
             )
         return token
@@ -259,7 +260,8 @@ class CatstailYunzaiBridge(Star):
                 async with session.get(self._manifest_url(), headers=headers) as response:
                     if response.status in (401, 403):
                         raise FatalSyncError(
-                            "MCP Token 无效或权限不足，请检查 Yunzai 插件配置"
+                            "MCP 凭据无效或权限不足，请检查 Yunzai "
+                            "config/config/server.yaml 的 auth"
                         )
                     if response.status != 200:
                         raise RuntimeError(
@@ -499,9 +501,9 @@ class CatstailYunzaiBridge(Star):
     async def _health_ok(self) -> bool:
         """Yunzai 侧是否可达。
 
-        必须带 Authorization：插件内 token 模式时 /mcp/health 自身免鉴权，但
-        Yunzai 的 server.auth 若开启、且插件用 authMode=yunzai（单凭据），
-        健康检查同样会被全局鉴权拦下，不带凭据会误判为“不可达”。
+        必须带 Authorization：Yunzai 侧插件不再自校验 Token，/mcp/health 也用
+        config/config/server.yaml 的 auth，不带凭据会被全局鉴权拦下，
+        误判为“不可达”。
         """
         try:
             headers = {"Authorization": self._auth_header()}
@@ -710,7 +712,8 @@ class CatstailYunzaiBridge(Star):
         if bool(self._get("auto_register", True)) and not self._effective_token():
             # 放在启动日志第一屏，避免用户只看到“MCP 没自动注册”却不知原因
             self.logger.error(
-                "MCP Token 未配置，无法自动注册 MCP 服务：请在插件配置中填写 Yunzai 的 Token，"
+                "MCP 凭据未配置，无法自动注册 MCP 服务：请在插件配置中填写 Yunzai "
+                "server.auth 中的凭据（config/config/server.yaml），"
                 "或为容器设置环境变量 CATSTAIL_MCP_TOKEN 后重启"
             )
         self._start_background()
