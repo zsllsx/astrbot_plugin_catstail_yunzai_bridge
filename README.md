@@ -61,6 +61,29 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 - 跨公网建议使用 HTTPS 反向代理，并在 Yunzai 侧配置 `publicBaseUrl` 与 `allowedIps`。
 - 不要把 Token 写进公开仓库或截图。
 
+### 清空 data 目录 / 重装插件后的恢复
+
+插件不会（也不应该）自己变出 Token。清掉 `data/config/astrbot_plugin_catstail_yunzai_bridge_config.json` 后，配置回到 schema 默认值（`base_url=http://127.0.0.1:2536`、`token` 为空），此时行为是：
+
+- `_apply()` 第一步抛 `未配置 MCP Token`，`data/mcp_server.json` **不会生成**，日志里是 `桥接配置错误: 未配置 MCP Token…`；
+- 容器内 `127.0.0.1` 指向容器自身，即便填了 Token 也连不到宿主机的 Yunzai（日志会有 `base_url 指向 127.0.0.1` 的告警）。
+
+两种恢复方式：
+
+1. 面板里重填 `base_url` + `token`，保存后 `/yz_mcp reload`；
+2. 更省事：写进容器环境变量，清空重装都不会丢：
+
+```yaml
+# compose.yml
+environment:
+  - CATSTAIL_MCP_URL=http://172.20.0.1:2536   # AstrBot 访问 Yunzai 的地址
+  - CATSTAIL_MCP_TOKEN=<Yunzai config/config.yaml 里的 token>
+```
+
+`CATSTAIL_MCP_URL` 优先级高于面板配置（能覆盖默认的回环地址）；`CATSTAIL_MCP_TOKEN` 只在面板 Token 为空时生效。
+
+**Skill 不需要恢复**：AstrBot 每次列举技能时实时扫描 `plugins/<插件目录>/skills/*/SKILL.md`，新技能默认 `active=true`，`data/skills.json` 被删会自动重建。如果重装后 `data/skills.json` 里始终没有 `game-data-advisor`，说明插件目录没被正确识别（常见于解压 zip 多出一层 `xxx-main/` 目录）。
+
 ## 身份规则
 
 - 群聊中 `qq` 取当前发言人，不取被 @ 的人，因此只能查“自己”。
@@ -133,6 +156,8 @@ AstrBot 启动
 | `status` 里「Token 指纹: 配置 X / 磁盘 Y」不一致 | 配置改了但 `data/mcp_server.json` 还是旧值，执行 `/yz_mcp reload`（插件重载时也会自动纠正） |
 | 改完 Token 仍 401，且 Yunzai 日志显示收到的是旧 Token | 实际发送的是 `data/mcp_server.json` 里的 `Authorization`，不是插件配置项；重启 AstrBot 或 `/yz_mcp reload` 才会重写 |
 | 重装插件后配置里的 Token 变空 | AstrBot 安装失败时会删除 `_config.json`；重填 Token，或给容器设置 `CATSTAIL_MCP_TOKEN` 兜底 |
+| 重装后 MCP 不自动注册、`mcp_server.json` 里没有该服务 | 配置被重置为空 Token，`_apply()` 在第一步就退出；见「清空 data 目录 / 重装插件后的恢复」 |
+| 重装后 `skills.json` 里始终没有 `game-data-advisor` | 插件目录没被识别，常见于解压 zip 多出一层 `xxx-main/`；确认 `plugins/<目录名>/metadata.yaml` 的 `name` 与目录名一致 |
 | 工具列表为空 | 查看 AstrBot 日志中的 `MCP 已连接`，确认 Yunzai 侧工具已注册（`gs` 下完整为 14 个） |
 | 只有 9 个工具、没有 `lore_*` | 语料组按数据注册：Yunzai 侧未导入 `data/lore` 时属正常现象；已导入则执行 `/yz_mcp reload` 刷新清单 |
 | 模型不调用工具 | 检查人格是否启用了 MCP 工具；确认 `inject_prompt` 未被关闭 |

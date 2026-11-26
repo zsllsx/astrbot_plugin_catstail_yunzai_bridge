@@ -105,12 +105,28 @@ class CatstailYunzaiBridge(Star):
         return str(self._get("tool_prefix", "yz_")).strip() or "yz_"
 
     def _base_url(self) -> str:
-        base = str(self._get("base_url", "")).strip().rstrip("/")
+        """MCP 基础地址。
+
+        优先级：环境变量 `CATSTAIL_MCP_URL` > 插件配置。
+
+        环境变量放最高，是为了覆盖"清空 data 目录重装后配置回到 schema 默认值
+        127.0.0.1"的情况——容器里 127.0.0.1 指向容器自身，必然连不上，而
+        `_config.json` 里的默认值又会把空配置填满，只靠配置项永远纠正不了。
+        """
+        env = os.environ.get("CATSTAIL_MCP_URL", "").strip()
+        base = (env or str(self._get("base_url", "")).strip()).rstrip("/")
         if not base:
-            raise FatalSyncError("未配置 base_url")
+            raise FatalSyncError(
+                "未配置 base_url：请在插件配置中填写，"
+                "或为容器设置环境变量 CATSTAIL_MCP_URL（形如 http://172.20.0.1:2536）"
+            )
         if not base.startswith(("http://", "https://")):
             raise FatalSyncError("base_url 必须以 http:// 或 https:// 开头")
         return base
+
+    @staticmethod
+    def _base_url_source() -> str:
+        return "环境变量" if os.environ.get("CATSTAIL_MCP_URL", "").strip() else "配置"
 
     def _mcp_url(self) -> str:
         path = str(self._get("mcp_path", "/mcp")).strip() or "/mcp"
@@ -671,6 +687,12 @@ class CatstailYunzaiBridge(Star):
             self.logger.info("桥接已禁用")
             return
         await self._restore_manifest()
+        if bool(self._get("auto_register", True)) and not self._effective_token():
+            # 放在启动日志第一屏，避免用户只看到“MCP 没自动注册”却不知原因
+            self.logger.error(
+                "MCP Token 未配置，无法自动注册 MCP 服务：请在插件配置中填写 Yunzai 的 Token，"
+                "或为容器设置环境变量 CATSTAIL_MCP_TOKEN 后重启"
+            )
         self._start_background()
 
     @_on_plugin_loaded()
@@ -1066,7 +1088,7 @@ class CatstailYunzaiBridge(Star):
         lines = ["Catstail MCP 桥接"]
         lines.append(f"启用: {'是' if self.enabled else '否'}")
         try:
-            lines.append(f"地址: {self._mcp_url()}")
+            lines.append(f"地址: {self._mcp_url()}（来源: {self._base_url_source()}）")
         except Exception as exc:
             lines.append(f"地址: 配置异常（{exc}）")
 
