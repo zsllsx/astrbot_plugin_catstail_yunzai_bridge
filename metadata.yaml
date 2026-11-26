@@ -11,6 +11,7 @@ desc: |
   需要 Yunzai 侧安装 catstail-yunzai-mcp 并配置 Token。
 version: 0.1.0
 author: catstail
+repo: https://github.com/zsllsx/astrbot_plugin_catstail_yunzai_bridge
 astrbot_version: ">=4.23.1"
 support_platforms:
   - aiocqhttp

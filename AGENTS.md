@@ -18,7 +18,8 @@ AstrBot 插件 `astrbot_plugin_catstail_yunzai_bridge`：把 Yunzai 侧的 `cats
 | **当前唯一工作目录** | `D:\docker\astrbot\data\plugins\astrbot_plugin_catstail_yunzai_bridge`（本目录） |
 | 容器内路径 | `/AstrBot/data/plugins/astrbot_plugin_catstail_yunzai_bridge` |
 | 已废弃 | `D:\workspace\catstail-project\astrbot-plugins`（内容已发布并同步，勿再编辑） |
-| 一键脚本 | `D:\workspace\catstail-project\update-astrbot-plugin.ps1` / `.cmd` |
+| 一键脚本 | 已不存在；直接用 git（见下方开发流程） |
+| Git | 本目录已是仓库，`origin = git@github.com:zsllsx/astrbot_plugin_catstail_yunzai_bridge.git`，分支 `main`（2026-11-26 恢复） |
 
 本目录是宿主目录与容器数据卷的同一份文件（bind mount），改完重启容器即生效，无需复制。
 
@@ -41,7 +42,7 @@ Yunzai 侧新增 5 个语料工具（`yz_<game>_lore_search` / `lore_entry` / `v
 
 - [ ] 语义（向量）召回：目前依赖 Yunzai 侧 BM25，本插件无需改动。
 - [ ] 语料工具的调用失败话术：被限流 / 语料缺失时引导用户说什么，可在 `LORE_RULES` 继续细化。
-- [ ] 把本文件纳入版本管理（当前为未跟踪文件）。
+- [x] 把本文件纳入版本管理（2026-11-26 已随仓库初始化提交）。
 
 ## 开发流程
 
