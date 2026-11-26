@@ -162,11 +162,22 @@ class CatstailYunzaiBridge(Star):
             )
         return token
 
+    def _auth_header(self) -> str:
+        """Authorization 头。
+
+        允许把 `Bearer xxx` 整串填进配置（Yunzai 的 server.auth 就是整串比较），
+        避免出现 `Bearer Bearer xxx` 这种双前缀。
+        """
+        token = self._token()
+        if token.lower().startswith("bearer "):
+            return token
+        return f"Bearer {token}"
+
     def _server_config(self) -> dict[str, Any]:
         return {
             "transport": "streamable_http",
             "url": self._mcp_url(),
-            "headers": {"Authorization": f"Bearer {self._token()}"},
+            "headers": {"Authorization": self._auth_header()},
             "timeout": self._as_int("connect_timeout", 30, 3, 120),
             "sse_read_timeout": self._as_int("sse_read_timeout", 1800, 30, 1800),
             "active": True,
@@ -240,7 +251,7 @@ class CatstailYunzaiBridge(Star):
             total=self._as_int("connect_timeout", 30, 3, 120)
         )
         headers = {
-            "Authorization": f"Bearer {self._token()}",
+            "Authorization": self._auth_header(),
             "Accept": "application/json",
         }
         try:
@@ -486,13 +497,22 @@ class CatstailYunzaiBridge(Star):
         return self._mcp_url().rstrip("/") + "/health"
 
     async def _health_ok(self) -> bool:
-        """Yunzai 侧是否可达（/mcp/health 免鉴权，开销极小）。"""
+        """Yunzai 侧是否可达。
+
+        必须带 Authorization：插件内 token 模式时 /mcp/health 自身免鉴权，但
+        Yunzai 的 server.auth 若开启、且插件用 authMode=yunzai（单凭据），
+        健康检查同样会被全局鉴权拦下，不带凭据会误判为“不可达”。
+        """
+        try:
+            headers = {"Authorization": self._auth_header()}
+        except FatalSyncError:
+            headers = {}
         try:
             timeout = aiohttp.ClientTimeout(
                 total=self._as_int("probe_timeout", 8, 2, 30)
             )
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(self._health_url()) as response:
+                async with session.get(self._health_url(), headers=headers) as response:
                     return response.status == 200
         except Exception:
             return False
@@ -1141,7 +1161,8 @@ class CatstailYunzaiBridge(Star):
         data/mcp_server.json 里写入的 Authorization。两者不一致时，Yunzai 侧
         必然 401，而改配置、重装都看不出原因。
         """
-        want = self._fingerprint(f"Bearer {token}")
+        raw = token if str(token).lower().startswith("bearer ") else (f"Bearer {token}" if token else "")
+        want = self._fingerprint(raw)
         try:
             disk = self.context.get_llm_tool_manager().load_mcp_config() or {}
             entry = (disk.get("mcpServers") or {}).get(self.server_name) or {}

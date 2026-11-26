@@ -61,6 +61,28 @@ WebUI → 插件 → `Catstail 游戏数据桥接`。
 - 跨公网建议使用 HTTPS 反向代理，并在 Yunzai 侧配置 `publicBaseUrl` 与 `allowedIps`。
 - 不要把 Token 写进公开仓库或截图。
 
+### 单凭据模式（只保留 Yunzai 的 token）
+
+Yunzai 的 `config/config/server.yaml` 已经开了 `auth` 时，可以让 `/mcp` 直接复用这套鉴权，不再维护第二套 Token：
+
+1. Yunzai 侧 `plugins/catstail-yunzai-mcp/config/config.yaml` 设置：
+
+```yaml
+authMode: yunzai
+```
+
+重启 Yunzai，日志应出现：
+
+```text
+[catstail-yunzai-mcp] 单凭据模式：/mcp 由 Yunzai 的 server.auth 鉴权
+```
+
+2. 本插件 `token` 填 Yunzai `server.auth` 里 `Bearer ` 之后那段；也可以整串填 `Bearer xxx`，插件不会重复加前缀。
+
+该模式下 `/mcp` **不会**进入 `Bot.express.skip_auth`，请求必须先通过 `serverAuth`，所以不会再出现"两套 Token 对不齐"的 401。若 `token` 与 `server.auth` 同时为空，Yunzai 侧插件会拒绝挂载 `/mcp`（避免端点无鉴权）。
+
+代价：这个凭据等同于 Yunzai 全站 HTTP 凭据（`/api`、`/File` 等接口同样认它），不要外泄。
+
 ### 清空 data 目录 / 重装插件后的恢复
 
 插件不会（也不应该）自己变出 Token。清掉 `data/config/astrbot_plugin_catstail_yunzai_bridge_config.json` 后，配置回到 schema 默认值（`base_url=http://127.0.0.1:2536`、`token` 为空），此时行为是：
